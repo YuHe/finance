@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    expose:
+      - "8000"
+    environment:
+      - PYTHONPATH=/app
+      - ENVIRONMENT=production
+      - ETF_DB_PATH=/app/data/etf_data.db
+      - USER_DB_PATH=/app/data/users.db
+      - SECRET_KEY=${SECRET_KEY:-etf-rotation-change-me-in-production}
+    volumes:
+      - etf_data:/app/data
+    networks:
+      - finance_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    ports:
+      - "${APP_PORT:-8193}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - finance_net
+    restart: unless-stopped
+
+networks:
+  finance_net:
+    driver: bridge
+
+volumes:
+  etf_data:

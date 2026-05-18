@@ -1,0 +1,294 @@
+"""回测引擎 - 周频调仓 + T+1执行 + 真实约束"""
+
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass, field
+from typing import Optional
+
+from data_layer import DataManager, BENCHMARK_CODE
+from factor_layer import FactorEngine
+from regime_layer import RegimeEngine, MarketRegime
+from selection_layer import Selector, WeightMethod
+from execution_layer import ExecutionEngine
+
+
+@dataclass
+class BacktestConfig:
+    """回测参数配置"""
+    start_date: str = "2018-01-01"
+    end_date: str = "2024-12-31"
+    initial_capital: float = 1_000_000.0
+    # 策略参数
+    top_n: int = 3
+    weight_method: str = "equal"  # "equal" / "inverse_vol"
+    rebalance_freq: str = "weekly"  # "weekly" / "biweekly" / "monthly"
+    # 因子参数
+    momentum_window: int = 20
+    ma_short: int = 5
+    ma_mid: int = 20
+    ma_long: int = 60
+    # 风控
+    stop_loss_single: float = 0.08   # 个股止损8%
+    stop_loss_portfolio: float = 0.12  # 组合止损12%
+    stop_loss_circuit: float = 0.20   # 熔断20%
+
+
+@dataclass
+class BacktestResult:
+    """回测结果"""
+    # 净值序列
+    nav_series: pd.Series = None  # date -> nav
+    benchmark_series: pd.Series = None  # date -> benchmark nav
+    # 持仓历史
+    positions_history: list = field(default_factory=list)  # [{date, weights}]
+    # 交易记录
+    trades: list = field(default_factory=list)
+    # 指标
+    total_return: float = 0.0
+    annual_return: float = 0.0
+    annual_volatility: float = 0.0
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    max_drawdown: float = 0.0
+    win_rate: float = 0.0
+    profit_loss_ratio: float = 0.0
+    total_trades: int = 0
+    turnover: float = 0.0
+
+
+class BacktestEngine:
+    """回测引擎"""
+
+    def __init__(self, config: BacktestConfig = None):
+        self.config = config or BacktestConfig()
+        self.data_mgr = DataManager()
+        self.factor_engine = FactorEngine(
+            momentum_window=self.config.momentum_window,
+            ma_short=self.config.ma_short,
+            ma_mid=self.config.ma_mid,
+            ma_long=self.config.ma_long,
+        )
+        self.regime_engine = RegimeEngine(
+            ma_mid=self.config.ma_mid,
+            ma_long=self.config.ma_long,
+        )
+        self.selector = Selector(
+            top_n=self.config.top_n,
+            weight_method=WeightMethod(self.config.weight_method),
+        )
+        self.executor = ExecutionEngine()
+
+    def run(self) -> BacktestResult:
+        """执行回测"""
+        cfg = self.config
+
+        # 加载数据
+        close_matrix = self.data_mgr.get_close_matrix(cfg.start_date, cfg.end_date)
+        amount_matrix = self.data_mgr.get_amount_matrix(cfg.start_date, cfg.end_date)
+        benchmark_df = self.data_mgr.get_daily(BENCHMARK_CODE, cfg.start_date, cfg.end_date)
+
+        if close_matrix.empty or benchmark_df.empty:
+            print("数据不足，请先运行 data_layer.DataManager().update_all()")
+            return BacktestResult()
+
+        benchmark_close = benchmark_df.set_index("date")["close"]
+
+        # 获取调仓日
+        rebalance_dates = self.data_mgr.get_weekly_rebalance_dates(cfg.start_date, cfg.end_date)
+        if cfg.rebalance_freq == "biweekly":
+            rebalance_dates = rebalance_dates[::2]
+        elif cfg.rebalance_freq == "monthly":
+            rebalance_dates = rebalance_dates[::4]
+
+        # 所有交易日
+        all_dates = self.data_mgr.get_trading_dates(cfg.start_date, cfg.end_date)
+
+        # 初始化
+        nav = cfg.initial_capital
+        nav_list = []
+        benchmark_nav_list = []
+        benchmark_start = benchmark_close.iloc[0] if len(benchmark_close) > 0 else 1.0
+        current_weights: dict[str, float] = {"CASH": 1.0}
+        cost_basis: dict[str, float] = {}  # 各持仓成本价
+        positions_history = []
+        trades = []
+        peak_nav = nav
+
+        # 逐日模拟
+        for i, date in enumerate(all_dates):
+            date_str = date if isinstance(date, str) else str(date)
+
+            # ── 每日盈亏 ──
+            if i > 0:
+                daily_returns = {}
+                for code in close_matrix.columns:
+                    col = close_matrix[code]
+                    if date_str in col.index and all_dates[i - 1] in col.index:
+                        prev = col.loc[all_dates[i - 1]]
+                        curr = col.loc[date_str]
+                        if prev > 0:
+                            daily_returns[code] = curr / prev - 1
+                pnl = self.executor.compute_daily_pnl(current_weights, daily_returns)
+                nav *= (1 + pnl)
+
+            # 记录净值
+            nav_list.append({"date": date_str, "nav": nav / cfg.initial_capital})
+
+            # 基准净值
+            if date_str in benchmark_close.index:
+                benchmark_nav_list.append({
+                    "date": date_str,
+                    "nav": benchmark_close.loc[date_str] / benchmark_start
+                })
+
+            # ── 风控检查 ──
+            peak_nav = max(peak_nav, nav)
+            drawdown = (peak_nav - nav) / peak_nav
+
+            if drawdown >= cfg.stop_loss_circuit:
+                # 熔断：全部清仓
+                current_weights = {"CASH": 1.0}
+                cost_basis = {}
+                continue
+
+            if drawdown >= cfg.stop_loss_portfolio:
+                # 组合止损：减半
+                for code in list(current_weights.keys()):
+                    if code != "CASH":
+                        current_weights[code] *= 0.5
+                cash = 1.0 - sum(w for c, w in current_weights.items() if c != "CASH")
+                current_weights["CASH"] = max(0, cash)
+
+            # ── 调仓日 T+1 执行逻辑 ──
+            # 如果前一日是调仓计算日，今天执行
+            if i > 0 and all_dates[i - 1] in rebalance_dates:
+                signal_date = all_dates[i - 1]
+                exec_date = date_str
+
+                # 在信号日计算因子
+                factors = self.factor_engine.compute_factors_at_date(
+                    close_matrix, amount_matrix, signal_date
+                )
+
+                # 判断环境
+                regime = self.regime_engine.detect_at_date(benchmark_close, signal_date)
+                cash_ratio = self.regime_engine.get_cash_ratio(regime)
+
+                # 选股
+                target_weights = self.selector.select(
+                    factors, cash_ratio, close_matrix.loc[:signal_date]
+                )
+
+                # 获取执行日数据
+                exec_data = {}
+                for code in close_matrix.columns:
+                    df_code = self.data_mgr.get_daily(code, exec_date, exec_date)
+                    if not df_code.empty:
+                        row = df_code.iloc[0]
+                        exec_data[code] = {
+                            "open": row["open"],
+                            "is_limit_up": bool(row.get("is_limit_up", 0)),
+                            "is_limit_down": bool(row.get("is_limit_down", 0)),
+                        }
+
+                # 成交额约束
+                amount_5d = {}
+                for code in close_matrix.columns:
+                    amt_df = self.data_mgr.get_daily(code)
+                    if not amt_df.empty:
+                        recent = amt_df[amt_df["date"] < pd.Timestamp(exec_date)].tail(5)
+                        if not recent.empty:
+                            amount_5d[code] = recent["amount"].mean()
+
+                # 执行
+                exec_result = self.executor.execute(
+                    target_weights=target_weights,
+                    current_weights=current_weights,
+                    execution_date_data=exec_data,
+                    total_value=nav,
+                    amount_5d_avg=amount_5d,
+                )
+
+                current_weights = exec_result.actual_weights
+                nav -= exec_result.total_fee
+
+                # 记录
+                positions_history.append({"date": exec_date, "weights": dict(current_weights)})
+                trades.extend([{
+                    "date": exec_date,
+                    "code": o.code,
+                    "direction": o.direction,
+                    "price": o.price,
+                    "shares": o.shares,
+                    "amount": o.amount,
+                    "fee": o.fee,
+                    "skipped": o.skipped,
+                    "skip_reason": o.skip_reason,
+                } for o in exec_result.orders])
+
+        # ── 计算指标 ──
+        result = BacktestResult()
+        result.positions_history = positions_history
+        result.trades = trades
+        result.total_trades = len([t for t in trades if not t.get("skipped")])
+
+        if nav_list:
+            nav_df = pd.DataFrame(nav_list).set_index("date")
+            result.nav_series = nav_df["nav"]
+
+            returns = nav_df["nav"].pct_change().dropna()
+            n_years = len(returns) / 252
+
+            result.total_return = nav_df["nav"].iloc[-1] - 1
+            result.annual_return = (1 + result.total_return) ** (1 / n_years) - 1 if n_years > 0 else 0
+            result.annual_volatility = returns.std() * np.sqrt(252)
+            result.sharpe_ratio = result.annual_return / result.annual_volatility if result.annual_volatility > 0 else 0
+
+            # Sortino
+            downside = returns[returns < 0]
+            downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else 1
+            result.sortino_ratio = result.annual_return / downside_std if downside_std > 0 else 0
+
+            # 最大回撤
+            cummax = nav_df["nav"].cummax()
+            drawdowns = (cummax - nav_df["nav"]) / cummax
+            result.max_drawdown = drawdowns.max()
+
+            # 胜率
+            weekly_returns = returns.resample("W").sum() if hasattr(returns.index, "freq") else returns
+            wins = (weekly_returns > 0).sum()
+            result.win_rate = wins / len(weekly_returns) if len(weekly_returns) > 0 else 0
+
+        if benchmark_nav_list:
+            bm_df = pd.DataFrame(benchmark_nav_list).set_index("date")
+            result.benchmark_series = bm_df["nav"]
+
+        return result
+
+
+def main():
+    """快速回测入口"""
+    config = BacktestConfig(
+        start_date="2019-01-01",
+        end_date="2024-12-31",
+        top_n=3,
+        weight_method="equal",
+    )
+    engine = BacktestEngine(config)
+    result = engine.run()
+
+    print("=" * 50)
+    print("回测结果")
+    print("=" * 50)
+    print(f"总收益:       {result.total_return:.2%}")
+    print(f"年化收益:     {result.annual_return:.2%}")
+    print(f"年化波动:     {result.annual_volatility:.2%}")
+    print(f"Sharpe:       {result.sharpe_ratio:.2f}")
+    print(f"Sortino:      {result.sortino_ratio:.2f}")
+    print(f"最大回撤:     {result.max_drawdown:.2%}")
+    print(f"胜率:         {result.win_rate:.2%}")
+    print(f"总交易次数:   {result.total_trades}")
+
+
+if __name__ == "__main__":
+    main()
