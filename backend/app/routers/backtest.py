@@ -177,24 +177,6 @@ def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
     return {"success": True, "data": {"id": task_id}, "error": None}
 
 
-from fastapi import Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-
-
-@router.api_route("/run-debug", methods=["POST"])
-async def run_debug(request: Request):
-    """临时调试：打印原始 body 和验证错误"""
-    body = await request.json()
-    print(f"[backtest-debug] raw body: {body}")
-    try:
-        req = BacktestRequest(**body)
-        return {"success": True, "parsed": req.model_dump()}
-    except Exception as e:
-        print(f"[backtest-debug] validation error: {e}")
-        return JSONResponse(status_code=422, content={"detail": str(e)})
-
-
 @router.get("/result/{task_id}")
 def get_result(task_id: str):
     if task_id not in _results:

@@ -8,6 +8,7 @@ const navItems = [
   { path: '/data', label: '数据', icon: '💾' },
   { path: '/signal', label: '信号', icon: '📡' },
   { path: '/portfolio', label: '模拟盘', icon: '💼' },
+  { path: '/llm', label: 'AI设置', icon: '🤖' },
 ]
 
 type ItemStatus = 'pending' | 'running' | 'ok' | 'error'

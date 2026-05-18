@@ -7,6 +7,7 @@ import SignalPage from './pages/SignalPage'
 import PortfolioPage from './pages/PortfolioPage'
 import DataPage from './pages/DataPage'
 import AdminPage from './pages/AdminPage'
+import LLMSettingsPage from './pages/LLMSettingsPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token } = useAuth()
@@ -37,6 +38,7 @@ function AppRoutes() {
         <Route path="data" element={<DataPage />} />
         <Route path="signal" element={<SignalPage />} />
         <Route path="portfolio" element={<PortfolioPage />} />
+        <Route path="llm" element={<LLMSettingsPage />} />
         <Route
           path="admin"
           element={

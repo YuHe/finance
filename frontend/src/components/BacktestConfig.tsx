@@ -15,10 +15,10 @@ interface EtfInfo {
 
 function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   const [params, setParams] = useState<BacktestParams>({
-    start_date: '2020-01-01',
-    end_date: '2024-12-31',
+    start_date: '2026-01-01',
+    end_date: new Date().toISOString().slice(0, 10),
     initial_capital: 1000000,
-    top_n: 3,
+    top_n: 1,
     weight_method: 'equal',
     rebalance_freq: 'weekly',
     momentum_window: 20,
@@ -110,24 +110,55 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
       </div>
 
       {/* Date Range */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">开始日期</label>
-          <input
-            type="date"
-            value={params.start_date}
-            onChange={(e) => handleChange('start_date', e.target.value)}
-            className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+      <div className="space-y-2">
+        <label className="block text-xs text-gray-400">回测时间</label>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {[
+            { label: '今年以来', start: `${new Date().getFullYear()}-01-01` },
+            { label: '近1年', start: new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10) },
+            { label: '近3年', start: new Date(Date.now() - 3 * 365 * 86400000).toISOString().slice(0, 10) },
+            { label: '近5年', start: new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10) },
+          ].map(preset => {
+            const endToday = new Date().toISOString().slice(0, 10)
+            const isActive = params.start_date === preset.start && params.end_date === endToday
+            return (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  handleChange('start_date', preset.start)
+                  handleChange('end_date', endToday)
+                }}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                  isActive
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-gray-200'
+                }`}
+              >
+                {preset.label}
+              </button>
+            )
+          })}
         </div>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">结束日期</label>
-          <input
-            type="date"
-            value={params.end_date}
-            onChange={(e) => handleChange('end_date', e.target.value)}
-            className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">起始</label>
+            <input
+              type="date"
+              value={params.start_date}
+              onChange={(e) => handleChange('start_date', e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">结束</label>
+            <input
+              type="date"
+              value={params.end_date}
+              onChange={(e) => handleChange('end_date', e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
         </div>
       </div>
 

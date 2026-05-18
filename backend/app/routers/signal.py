@@ -1,8 +1,9 @@
-"""信号 API - 每周计算轮动信号"""
+"""信号 API - 每周计算轮动信号（含情绪过滤器）"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.orm import Session
 import sys
 import os
 
@@ -12,6 +13,11 @@ from data_layer import DataManager, BENCHMARK_CODE
 from factor_layer import FactorEngine
 from regime_layer import RegimeEngine
 from selection_layer import Selector
+from llm_layer.llm_engine import get_cached_sentiments, apply_sentiment_filter
+
+from app.database import get_db
+from app.deps import get_current_user
+from app.models.user import User
 
 router = APIRouter()
 
@@ -25,8 +31,8 @@ class AdoptRequest(BaseModel):
 
 
 @router.get("/latest")
-def get_latest_signal():
-    """计算最新信号"""
+def get_latest_signal(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """计算最新信号（含情绪过滤）"""
     dm = DataManager()
     factor_engine = FactorEngine()
     regime_engine = RegimeEngine()
@@ -48,8 +54,34 @@ def get_latest_signal():
     regime = regime_engine.detect(benchmark_close)
     cash_ratio = regime_engine.get_cash_ratio(regime)
 
-    # 选股
+    # 选股（原始 Top N）
     target_weights = selector.select(factors, cash_ratio, close_matrix)
+
+    # === 情绪过滤器 V1 ===
+    sentiment_data = get_cached_sentiments(user.id, db)
+    sentiment_warnings = []
+    if sentiment_data:
+        equity_codes = [c for c in target_weights if c != "CASH"]
+        filtered_codes, sentiment_warnings = apply_sentiment_filter(
+            equity_codes, factors, sentiment_data
+        )
+        # 如果有剔除/降权，重新分配权重
+        if set(filtered_codes) != set(equity_codes):
+            equity_ratio = 1.0 - cash_ratio
+            warn_codes = {w["code"] for w in sentiment_warnings if w["action"] == "warn"}
+            n = len(filtered_codes)
+            if n > 0:
+                target_weights = {}
+                for code in filtered_codes:
+                    base_w = equity_ratio / n
+                    if code in warn_codes:
+                        base_w *= 0.5  # 降权 50%
+                    target_weights[code] = base_w
+                # 降权剩余的归入现金
+                used = sum(target_weights.values())
+                target_weights["CASH"] = 1.0 - used
+            else:
+                target_weights = {"CASH": 1.0}
 
     signal = {
         "id": len(_signals),
@@ -57,6 +89,8 @@ def get_latest_signal():
         "cash_ratio": cash_ratio,
         "target_weights": target_weights,
         "factors": factors.to_dict(orient="records") if not factors.empty else [],
+        "sentiment_warnings": sentiment_warnings,
+        "sentiment_data": {k: v for k, v in sentiment_data.items()} if sentiment_data else {},
         "status": "pending",
     }
     _signals.append(signal)
@@ -77,3 +111,4 @@ def adopt_signal(signal_id: int):
     _signals[signal_id]["status"] = "adopted"
     _adopted_signals.append(_signals[signal_id])
     return {"success": True, "signal": _signals[signal_id]}
+
