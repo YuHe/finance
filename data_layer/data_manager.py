@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import threading
 import baostock as bs
 import pandas as pd
 import numpy as np
@@ -24,11 +25,20 @@ class DataManager:
 
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._create_tables()
+        self._local = threading.local()
+        self._ensure_tables()
 
-    def _create_tables(self):
-        cursor = self.conn.cursor()
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """每个线程独立的 SQLite 连接"""
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            self._local.conn = sqlite3.connect(self.db_path)
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+        return self._local.conn
+
+    def _ensure_tables(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS etf_daily (
             code TEXT NOT NULL,
@@ -51,7 +61,8 @@ class DataManager:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_daily_date ON etf_daily(date)"
         )
-        self.conn.commit()
+        conn.commit()
+        conn.close()
 
     # ─── 数据获取 ───────────────────────────────────────────
 
@@ -147,7 +158,11 @@ class DataManager:
         df = df[["code", "date", "open", "high", "low", "close",
                  "volume", "amount", "turnover", "is_limit_up", "is_limit_down"]]
 
-        df.to_sql("etf_daily", self.conn, if_exists="append", index=False)
+        # 使用 INSERT OR REPLACE 避免重复主键崩溃
+        placeholders = ",".join(["?"] * len(df.columns))
+        cols = ",".join(df.columns)
+        sql = f"INSERT OR REPLACE INTO etf_daily ({cols}) VALUES ({placeholders})"
+        self.conn.executemany(sql, df.values.tolist())
         self.conn.commit()
 
     def update_all(self, start_date: str = "2015-01-01", end_date: str = None):
@@ -212,6 +227,18 @@ class DataManager:
             return pd.DataFrame()
         return pd.concat(frames, axis=1).sort_index()
 
+    def get_open_matrix(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """获取开盘价矩阵 (date x code)"""
+        codes = [etf["code"] for etf in ETF_POOL]
+        frames = []
+        for code in codes:
+            df = self.get_daily(code, start_date, end_date)
+            if not df.empty:
+                frames.append(df.set_index("date")[["open"]].rename(columns={"open": code}))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, axis=1).sort_index()
+
     def get_limit_status(self, date: str) -> dict[str, dict]:
         """获取指定日期各ETF涨跌停状态"""
         rows = self.conn.execute(
@@ -245,11 +272,15 @@ class DataManager:
         if not dates:
             return []
         df = pd.DataFrame({"date": pd.to_datetime(dates)})
-        df["week"] = df["date"].dt.isocalendar().week
-        df["year"] = df["date"].dt.year
+        # 使用 isocalendar 的 year 和 week 保持一致，避免跨年边界问题
+        iso = df["date"].dt.isocalendar()
+        df["iso_year"] = iso["year"]
+        df["iso_week"] = iso["week"]
         # 每周最后一个交易日
-        weekly = df.groupby(["year", "week"])["date"].max().reset_index(drop=True)
+        weekly = df.groupby(["iso_year", "iso_week"])["date"].max().reset_index(drop=True)
         return [d.strftime("%Y-%m-%d") for d in sorted(weekly)]
 
     def close(self):
-        self.conn.close()
+        if hasattr(self._local, "conn") and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None

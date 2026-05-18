@@ -8,6 +8,7 @@ from enum import Enum
 class WeightMethod(str, Enum):
     EQUAL = "equal"                  # 等权
     INVERSE_VOL = "inverse_vol"     # 逆波动率加权
+    MOMENTUM_WEIGHTED = "momentum_weighted"  # 动量加权
 
 
 class Selector:
@@ -60,6 +61,8 @@ class Selector:
 
         if self.weight_method == WeightMethod.INVERSE_VOL and close_matrix is not None:
             weights = self._inverse_vol_weights(codes, close_matrix)
+        elif self.weight_method == WeightMethod.MOMENTUM_WEIGHTED:
+            weights = self._momentum_weights(codes, selected)
         else:
             weights = {code: 1.0 / len(codes) for code in codes}
 
@@ -84,3 +87,16 @@ class Selector:
         inv_vols = {code: 1.0 / vol for code, vol in vols.items()}
         total = sum(inv_vols.values())
         return {code: iv / total for code, iv in inv_vols.items()}
+
+    def _momentum_weights(self, codes: list[str], selected: pd.DataFrame) -> dict[str, float]:
+        """动量加权：动量值越高权重越高（softmax归一化）"""
+        momentums = {}
+        for code in codes:
+            row = selected[selected["code"] == code]
+            if not row.empty:
+                m = max(row.iloc[0]["momentum"], 0.001)  # 确保正值
+                momentums[code] = m
+            else:
+                momentums[code] = 0.001
+        total = sum(momentums.values())
+        return {code: m / total for code, m in momentums.items()}

@@ -20,7 +20,7 @@ class BacktestConfig:
     initial_capital: float = 1_000_000.0
     # 策略参数
     top_n: int = 3
-    weight_method: str = "equal"  # "equal" / "inverse_vol"
+    weight_method: str = "equal"  # "equal" / "inverse_vol" / "momentum_weighted"
     rebalance_freq: str = "weekly"  # "weekly" / "biweekly" / "monthly"
     # 因子参数
     momentum_window: int = 20
@@ -31,6 +31,7 @@ class BacktestConfig:
     stop_loss_single: float = 0.08   # 个股止损8%
     stop_loss_portfolio: float = 0.12  # 组合止损12%
     stop_loss_circuit: float = 0.20   # 熔断20%
+    circuit_cooldown: int = 10  # 熔断后冷却天数
 
 
 @dataclass
@@ -118,6 +119,14 @@ class BacktestEngine:
             print(f"[backtest] 交易日列表为空，无法回测")
             return BacktestResult()
 
+        # 预构建执行日数据缓存（避免N+1查询）
+        # 从 close_matrix 中提取 open 价格矩阵
+        open_matrix = self.data_mgr.get_open_matrix(cfg.start_date, cfg.end_date)
+        limit_cache = {}  # date_str -> {code: {is_limit_up, is_limit_down}}
+
+        # 预计算5日均成交额（滚动窗口）
+        amount_5d_rolling = amount_matrix.rolling(5).mean()
+
         # 初始化
         nav = cfg.initial_capital
         nav_list = []
@@ -128,6 +137,10 @@ class BacktestEngine:
         positions_history = []
         trades = []
         peak_nav = nav
+        circuit_cooldown_until = None  # 熔断冷却截止日期
+
+        # 将 rebalance_dates 转为 set 加速查找
+        rebalance_set = set(rebalance_dates)
 
         # 逐日模拟
         for i, date in enumerate(all_dates):
@@ -136,13 +149,16 @@ class BacktestEngine:
             # ── 每日盈亏 ──
             if i > 0:
                 daily_returns = {}
+                prev_date_str = all_dates[i - 1] if isinstance(all_dates[i - 1], str) else str(all_dates[i - 1])
                 for code in close_matrix.columns:
                     col = close_matrix[code]
-                    if date_str in col.index and all_dates[i - 1] in col.index:
-                        prev = col.loc[all_dates[i - 1]]
+                    try:
+                        prev = col.loc[prev_date_str]
                         curr = col.loc[date_str]
-                        if prev > 0:
+                        if pd.notna(prev) and pd.notna(curr) and prev > 0:
                             daily_returns[code] = curr / prev - 1
+                    except KeyError:
+                        continue
                 pnl = self.executor.compute_daily_pnl(current_weights, daily_returns)
                 nav *= (1 + pnl)
 
@@ -150,34 +166,65 @@ class BacktestEngine:
             nav_list.append({"date": date_str, "nav": nav / cfg.initial_capital})
 
             # 基准净值
-            if date_str in benchmark_close.index:
-                benchmark_nav_list.append({
-                    "date": date_str,
-                    "nav": benchmark_close.loc[date_str] / benchmark_start
-                })
+            if len(benchmark_close) > 0:
+                try:
+                    bm_val = benchmark_close.loc[date_str]
+                    if pd.notna(bm_val):
+                        benchmark_nav_list.append({
+                            "date": date_str,
+                            "nav": bm_val / benchmark_start
+                        })
+                except KeyError:
+                    pass
 
             # ── 风控检查 ──
             peak_nav = max(peak_nav, nav)
             drawdown = (peak_nav - nav) / peak_nav
 
             if drawdown >= cfg.stop_loss_circuit:
-                # 熔断：全部清仓
+                # 熔断：全部清仓，记录交易
+                for code, w in list(current_weights.items()):
+                    if code != "CASH" and w > 0.001:
+                        sell_amount = w * nav
+                        fee = sell_amount * self.executor.fee_rate
+                        nav -= fee
+                        trades.append({
+                            "date": date_str, "code": code,
+                            "direction": "sell", "price": 0, "shares": 0,
+                            "amount": sell_amount, "fee": fee,
+                            "skipped": False, "skip_reason": "熔断清仓",
+                        })
                 current_weights = {"CASH": 1.0}
                 cost_basis = {}
+                circuit_cooldown_until = i + cfg.circuit_cooldown
                 continue
 
             if drawdown >= cfg.stop_loss_portfolio:
-                # 组合止损：减半
+                # 组合止损：减半，记录交易
                 for code in list(current_weights.keys()):
-                    if code != "CASH":
+                    if code != "CASH" and current_weights[code] > 0.001:
+                        sell_w = current_weights[code] * 0.5
+                        sell_amount = sell_w * nav
+                        fee = sell_amount * self.executor.fee_rate
+                        nav -= fee
                         current_weights[code] *= 0.5
+                        trades.append({
+                            "date": date_str, "code": code,
+                            "direction": "sell", "price": 0, "shares": 0,
+                            "amount": sell_amount, "fee": fee,
+                            "skipped": False, "skip_reason": "组合止损减仓",
+                        })
                 cash = 1.0 - sum(w for c, w in current_weights.items() if c != "CASH")
                 current_weights["CASH"] = max(0, cash)
 
             # ── 调仓日 T+1 执行逻辑 ──
             # 如果前一日是调仓计算日，今天执行
-            if i > 0 and all_dates[i - 1] in rebalance_dates:
-                signal_date = all_dates[i - 1]
+            if i > 0 and all_dates[i - 1] in rebalance_set:
+                # 熔断冷却期内不调仓
+                if circuit_cooldown_until is not None and i < circuit_cooldown_until:
+                    continue
+
+                signal_date = all_dates[i - 1] if isinstance(all_dates[i - 1], str) else str(all_dates[i - 1])
                 exec_date = date_str
 
                 # 在信号日计算因子
@@ -194,26 +241,34 @@ class BacktestEngine:
                     factors, cash_ratio, close_matrix.loc[:signal_date]
                 )
 
-                # 获取执行日数据
+                # 获取执行日数据（从预加载的矩阵中获取，避免N+1查询）
                 exec_data = {}
                 for code in close_matrix.columns:
-                    df_code = self.data_mgr.get_daily(code, exec_date, exec_date)
-                    if not df_code.empty:
-                        row = df_code.iloc[0]
-                        exec_data[code] = {
-                            "open": row["open"],
-                            "is_limit_up": bool(row.get("is_limit_up", 0)),
-                            "is_limit_down": bool(row.get("is_limit_down", 0)),
-                        }
+                    try:
+                        open_price = open_matrix[code].loc[exec_date] if code in open_matrix.columns else 0
+                        if pd.notna(open_price) and open_price > 0:
+                            # 获取涨跌停状态
+                            if exec_date not in limit_cache:
+                                limit_cache[exec_date] = self.data_mgr.get_limit_status(exec_date)
+                            limits = limit_cache[exec_date].get(code, {})
+                            exec_data[code] = {
+                                "open": float(open_price),
+                                "is_limit_up": limits.get("is_limit_up", False),
+                                "is_limit_down": limits.get("is_limit_down", False),
+                            }
+                    except KeyError:
+                        continue
 
-                # 成交额约束
+                # 成交额约束（从预计算的滚动均值获取）
                 amount_5d = {}
                 for code in close_matrix.columns:
-                    amt_df = self.data_mgr.get_daily(code)
-                    if not amt_df.empty:
-                        recent = amt_df[amt_df["date"] < pd.Timestamp(exec_date)].tail(5)
-                        if not recent.empty:
-                            amount_5d[code] = recent["amount"].mean()
+                    try:
+                        # 用信号日的5日均额（exec_date前一天）
+                        val = amount_5d_rolling[code].loc[signal_date]
+                        if pd.notna(val) and val > 0:
+                            amount_5d[code] = float(val)
+                    except (KeyError, TypeError):
+                        continue
 
                 # 执行
                 exec_result = self.executor.execute(
@@ -225,7 +280,11 @@ class BacktestEngine:
                 )
 
                 current_weights = exec_result.actual_weights
-                nav -= exec_result.total_fee
+                # 手续费从现金中扣除，调整 CASH 权重
+                if exec_result.total_fee > 0 and nav > 0:
+                    fee_ratio = exec_result.total_fee / nav
+                    current_weights["CASH"] = max(0, current_weights.get("CASH", 0) - fee_ratio)
+                    nav -= exec_result.total_fee
 
                 # 记录
                 positions_history.append({"date": exec_date, "weights": dict(current_weights)})
@@ -248,14 +307,16 @@ class BacktestEngine:
         result.total_trades = len([t for t in trades if not t.get("skipped")])
 
         if nav_list:
-            nav_df = pd.DataFrame(nav_list).set_index("date")
+            nav_df = pd.DataFrame(nav_list)
+            nav_df["date"] = pd.to_datetime(nav_df["date"])
+            nav_df = nav_df.set_index("date")
             result.nav_series = nav_df["nav"]
 
             returns = nav_df["nav"].pct_change().dropna()
             n_years = len(returns) / 252
 
             result.total_return = nav_df["nav"].iloc[-1] - 1
-            result.annual_return = (1 + result.total_return) ** (1 / n_years) - 1 if n_years > 0 else 0
+            result.annual_return = (1 + result.total_return) ** (1 / n_years) - 1 if n_years > 0.01 else 0
             result.annual_volatility = returns.std() * np.sqrt(252)
             result.sharpe_ratio = result.annual_return / result.annual_volatility if result.annual_volatility > 0 else 0
 
@@ -269,13 +330,17 @@ class BacktestEngine:
             drawdowns = (cummax - nav_df["nav"]) / cummax
             result.max_drawdown = drawdowns.max()
 
-            # 胜率
-            weekly_returns = returns.resample("W").sum() if hasattr(returns.index, "freq") else returns
-            wins = (weekly_returns > 0).sum()
-            result.win_rate = wins / len(weekly_returns) if len(weekly_returns) > 0 else 0
+            # 胜率（周频）
+            weekly_returns = returns.resample("W").apply(lambda x: (1 + x).prod() - 1)
+            weekly_returns = weekly_returns.dropna()
+            if len(weekly_returns) > 0:
+                wins = (weekly_returns > 0).sum()
+                result.win_rate = wins / len(weekly_returns)
 
         if benchmark_nav_list:
-            bm_df = pd.DataFrame(benchmark_nav_list).set_index("date")
+            bm_df = pd.DataFrame(benchmark_nav_list)
+            bm_df["date"] = pd.to_datetime(bm_df["date"])
+            bm_df = bm_df.set_index("date")
             result.benchmark_series = bm_df["nav"]
 
         return result

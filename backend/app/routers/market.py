@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, BackgroundTasks
 from typing import Optional
+import threading
 import sys
 import os
 
@@ -13,9 +14,9 @@ from regime_layer import RegimeEngine
 
 router = APIRouter()
 
-# 更新任务状态（内存，单任务）
-# items: list of {code, name, status: "pending"|"ok"|"error", error: str}
+# 更新任务状态（内存，单任务）+ 锁保护
 _update_state: dict = {"status": "idle", "message": "", "progress": 0, "total": 0, "items": []}
+_update_lock = threading.Lock()
 
 
 @router.get("/etfs")
@@ -54,8 +55,10 @@ def get_regime():
 @router.post("/update")
 def trigger_update(background_tasks: BackgroundTasks):
     """触发数据更新（后台执行，立即返回）"""
-    if _update_state["status"] == "running":
-        return {"status": "running", "message": "更新已在进行中"}
+    with _update_lock:
+        if _update_state["status"] == "running":
+            return {"status": "running", "message": "更新已在进行中"}
+        _update_state["status"] = "running"
     background_tasks.add_task(_do_update)
     return {"status": "started"}
 
@@ -66,37 +69,57 @@ def get_update_status():
     return _update_state
 
 
+def _update_single_etf(code: str, start_date: str = "2015-01-01", end_date: str = None):
+    """单个ETF更新（独立 BaoStock session + 独立 DB 连接）"""
+    import baostock as bs
+
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise RuntimeError(f"BaoStock 登录失败: {lg.error_msg}")
+    try:
+        dm = DataManager()
+        dm.update_etf(code, start_date, end_date, _logged_in=True)
+    finally:
+        bs.logout()
+
+
 def _do_update():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     codes = [etf["code"] for etf in ETF_POOL] + [BENCHMARK_CODE]
     total = len(codes)
+
     # 初始化每个标的的状态
     items = []
     for code in codes:
         name = next((e["name"] for e in ETF_POOL if e["code"] == code), BENCHMARK_NAME if code == BENCHMARK_CODE else code)
         items.append({"code": code, "name": name, "status": "pending", "error": ""})
-    _update_state.update({"status": "running", "progress": 0, "total": total, "message": "开始更新...", "items": items})
+    _update_state.update({"status": "running", "progress": 0, "total": total, "message": "开始并行更新...", "items": items})
 
-    import baostock as bs
-    lg = bs.login()
-    if lg.error_code != "0":
-        _update_state.update({"status": "error", "message": f"BaoStock 登录失败: {lg.error_msg}"})
-        return
+    # 并行更新（BaoStock 每个线程独立 login/logout）
+    max_workers = min(4, total)  # BaoStock 限制并发数，4线程较安全
+    completed_count = 0
 
-    dm = DataManager()
-    for i, item in enumerate(items):
-        code = item["code"]
-        item["status"] = "running"
-        _update_state["message"] = f"更新 {item['name']}({code})..."
-        _update_state["progress"] = i
+    def _worker(idx: int, code: str):
+        nonlocal completed_count
+        items[idx]["status"] = "running"
         try:
-            dm.update_etf(code, _logged_in=True)
-            item["status"] = "ok"
+            _update_single_etf(code)
+            items[idx]["status"] = "ok"
         except Exception as e:
-            item["status"] = "error"
-            item["error"] = str(e)
-        _update_state["progress"] = i + 1
+            items[idx]["status"] = "error"
+            items[idx]["error"] = str(e)
+        finally:
+            completed_count += 1
+            _update_state["progress"] = completed_count
+            _update_state["message"] = f"更新中... ({completed_count}/{total})"
 
-    bs.logout()
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_worker, i, item["code"]): i for i, item in enumerate(items)}
+        for future in as_completed(futures):
+            # 异常已在 _worker 内捕获
+            pass
+
     errors = [it for it in items if it["status"] == "error"]
     if errors:
         _update_state.update({"status": "done", "progress": total,

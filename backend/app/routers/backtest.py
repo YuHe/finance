@@ -4,6 +4,7 @@ from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
 import uuid
+import time
 import sys
 import os
 
@@ -13,8 +14,25 @@ from backtest import BacktestConfig, BacktestEngine
 
 router = APIRouter()
 
-# 简单内存存储回测结果（生产应换DB）
+# 回测结果存储（带 TTL 清理）
 _results: dict = {}
+_RESULT_TTL = 3600  # 结果保留1小时
+_MAX_RESULTS = 50   # 最多保留50个结果
+
+
+def _cleanup_results():
+    """清理过期结果"""
+    if len(_results) <= _MAX_RESULTS:
+        return
+    now = time.time()
+    expired = [k for k, v in _results.items() if now - v.get("_ts", 0) > _RESULT_TTL]
+    for k in expired:
+        del _results[k]
+    # 如果还是超限，删除最旧的
+    if len(_results) > _MAX_RESULTS:
+        sorted_keys = sorted(_results.keys(), key=lambda k: _results[k].get("_ts", 0))
+        for k in sorted_keys[:len(_results) - _MAX_RESULTS]:
+            del _results[k]
 
 
 class BacktestRequest(BaseModel):
@@ -35,7 +53,11 @@ class BacktestRequest(BaseModel):
 
 def _weight_method_map(wm: str) -> str:
     """前端枚举 → 引擎枚举"""
-    return {"equal": "equal", "momentum_weighted": "equal", "inverse_volatility": "inverse_vol"}.get(wm, "equal")
+    return {
+        "equal": "equal",
+        "momentum_weighted": "momentum_weighted",
+        "inverse_volatility": "inverse_vol",
+    }.get(wm, "equal")
 
 
 def _run_backtest(task_id: str, req: BacktestRequest):
@@ -62,13 +84,13 @@ def _run_backtest(task_id: str, req: BacktestRequest):
 
         if _cm.empty:
             _results[task_id] = {
-                "status": "failed",
+                "status": "failed", "_ts": time.time(),
                 "error": {"code": "NO_DATA", "message": "数据库中没有ETF数据，请先点击侧边栏更新行情数据"},
             }
             return
         if _cm.shape[1] < config.top_n:
             _results[task_id] = {
-                "status": "failed",
+                "status": "failed", "_ts": time.time(),
                 "error": {"code": "INSUFFICIENT_DATA",
                           "message": f"可用ETF数({_cm.shape[1]})不足，需要至少{config.top_n}个，请重新更新行情数据"},
             }
@@ -79,7 +101,7 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         # 检查是否因数据不足返回了空结果
         if result.nav_series is None or len(result.nav_series) == 0:
             _results[task_id] = {
-                "status": "failed",
+                "status": "failed", "_ts": time.time(),
                 "error": {"code": "NO_DATA", "message": f"回测区间内数据不足（可用ETF:{_cm.shape[1]}个），请尝试缩短回测时间范围"},
             }
             return
@@ -99,7 +121,7 @@ def _run_backtest(task_id: str, req: BacktestRequest):
             {
                 "date": t["date"],
                 "etf_code": t["code"],
-                "etf_name": t.get("code", ""),   # 引擎暂未传name，用code占位
+                "etf_name": t.get("code", ""),
                 "direction": t["direction"],
                 "price": t.get("price", 0),
                 "volume": t.get("shares", 0),
@@ -115,7 +137,7 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         ) else 0.0
 
         _results[task_id] = {
-            "status": "completed",
+            "status": "completed", "_ts": time.time(),
             "id": task_id,
             "metrics": {
                 "total_return": result.total_return,
@@ -137,17 +159,17 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         }
     except Exception as e:
         _results[task_id] = {
-            "status": "failed",
+            "status": "failed", "_ts": time.time(),
             "error": {"code": "ENGINE_ERROR", "message": str(e)},
         }
 
 
 @router.post("/run")
 def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
+    _cleanup_results()
     task_id = str(uuid.uuid4())
-    _results[task_id] = {"status": "running"}
+    _results[task_id] = {"status": "running", "_ts": time.time()}
     background_tasks.add_task(_run_backtest, task_id, req)
-    # 包装为前端期望的 {success, data} 格式
     return {"success": True, "data": {"id": task_id}, "error": None}
 
 
@@ -155,4 +177,6 @@ def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
 def get_result(task_id: str):
     if task_id not in _results:
         return {"success": False, "data": None, "error": {"code": "NOT_FOUND", "message": "任务不存在"}}
-    return {"success": True, "data": _results[task_id], "error": None}
+    result = _results[task_id]
+    # 返回时去掉内部时间戳
+    return {"success": True, "data": {k: v for k, v in result.items() if k != "_ts"}, "error": None}

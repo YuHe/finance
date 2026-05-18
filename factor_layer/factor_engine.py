@@ -33,8 +33,8 @@ class FactorEngine:
             if len(close) < self.ma_long:
                 continue
 
-            # 动量：20日涨幅
-            momentum = close.iloc[-1] / close.iloc[-self.momentum_window] - 1 if len(close) >= self.momentum_window else 0
+            # 动量：momentum_window 日涨幅（从 -window-1 到 -1，共 window 个交易日）
+            momentum = close.iloc[-1] / close.iloc[-(self.momentum_window + 1)] - 1 if len(close) > self.momentum_window else 0
 
             # 趋势：MA5 > MA20 > MA60
             ma_short = close.rolling(self.ma_short).mean().iloc[-1]
