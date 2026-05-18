@@ -14,7 +14,8 @@ from regime_layer import RegimeEngine
 router = APIRouter()
 
 # 更新任务状态（内存，单任务）
-_update_state: dict = {"status": "idle", "message": "", "progress": 0, "total": 0}
+# items: list of {code, name, status: "pending"|"ok"|"error", error: str}
+_update_state: dict = {"status": "idle", "message": "", "progress": 0, "total": 0, "items": []}
 
 
 @router.get("/etfs")
@@ -68,14 +69,37 @@ def get_update_status():
 def _do_update():
     codes = [etf["code"] for etf in ETF_POOL] + [BENCHMARK_CODE]
     total = len(codes)
-    _update_state.update({"status": "running", "progress": 0, "total": total, "message": "开始更新..."})
+    # 初始化每个标的的状态
+    items = []
+    for code in codes:
+        name = next((e["name"] for e in ETF_POOL if e["code"] == code), BENCHMARK_NAME if code == BENCHMARK_CODE else code)
+        items.append({"code": code, "name": name, "status": "pending", "error": ""})
+    _update_state.update({"status": "running", "progress": 0, "total": total, "message": "开始更新...", "items": items})
+
+    import baostock as bs
+    lg = bs.login()
+    if lg.error_code != "0":
+        _update_state.update({"status": "error", "message": f"BaoStock 登录失败: {lg.error_msg}"})
+        return
+
     dm = DataManager()
-    for i, code in enumerate(codes, 1):
-        name = next((e["name"] for e in ETF_POOL if e["code"] == code), code)
-        _update_state["message"] = f"更新 {name}({code})..."
-        _update_state["progress"] = i - 1
+    for i, item in enumerate(items):
+        code = item["code"]
+        item["status"] = "running"
+        _update_state["message"] = f"更新 {item['name']}({code})..."
+        _update_state["progress"] = i
         try:
-            dm.update_etf(code)
+            dm.update_etf(code, _logged_in=True)
+            item["status"] = "ok"
         except Exception as e:
-            _update_state["message"] = f"{code} 更新失败: {e}"
-    _update_state.update({"status": "done", "progress": total, "message": "全部更新完成"})
+            item["status"] = "error"
+            item["error"] = str(e)
+        _update_state["progress"] = i + 1
+
+    bs.logout()
+    errors = [it for it in items if it["status"] == "error"]
+    if errors:
+        _update_state.update({"status": "done", "progress": total,
+                               "message": f"完成，{len(errors)} 个标的失败"})
+    else:
+        _update_state.update({"status": "done", "progress": total, "message": "全部更新完成"})
