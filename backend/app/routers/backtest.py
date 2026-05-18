@@ -53,6 +53,13 @@ def _run_backtest(task_id: str, req: BacktestRequest):
             stop_loss_circuit=req.stop_loss_threshold * 2.5 if req.stop_loss_enabled else 1.0,
         )
         engine = BacktestEngine(config)
+
+        # 诊断日志
+        import os as _os
+        _db = _os.environ.get("ETF_DB_PATH", "NOT_SET")
+        _cm = engine.data_mgr.get_close_matrix(config.start_date, config.end_date)
+        print(f"[backtest] DB={_db} close_matrix shape={_cm.shape} start={config.start_date} end={config.end_date}")
+
         result = engine.run()
 
         # 检查是否因数据不足返回了空结果
