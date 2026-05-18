@@ -114,6 +114,9 @@ class BacktestEngine:
 
         # 所有交易日
         all_dates = self.data_mgr.get_trading_dates(cfg.start_date, cfg.end_date)
+        if not all_dates:
+            print(f"[backtest] 交易日列表为空，无法回测")
+            return BacktestResult()
 
         # 初始化
         nav = cfg.initial_capital

@@ -224,10 +224,14 @@ class DataManager:
         }
 
     def get_trading_dates(self, start_date: str = None, end_date: str = None) -> list[str]:
-        """获取交易日列表（基于基准ETF有数据的日期）"""
+        """获取交易日列表（优先基于基准ETF，fallback到任意有数据的ETF）"""
         sql = "SELECT DISTINCT date FROM etf_daily WHERE code = ? ORDER BY date"
         params = [BENCHMARK_CODE]
         rows = self.conn.execute(sql, params).fetchall()
+        # 如果基准没数据，fallback到整个数据库中任意有数据的日期
+        if not rows:
+            sql = "SELECT DISTINCT date FROM etf_daily ORDER BY date"
+            rows = self.conn.execute(sql).fetchall()
         dates = [row[0] for row in rows]
         if start_date:
             dates = [d for d in dates if d >= start_date]
