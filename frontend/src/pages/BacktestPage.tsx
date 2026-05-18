@@ -25,7 +25,8 @@ function BacktestPage() {
           setLoading(false)
           return
         } else if (data.status === 'failed') {
-          setError('回测运行失败，请检查参数后重试')
+          const raw = data as unknown as { error?: { message?: string } }
+          setError(raw.error?.message || '回测运行失败，请检查参数后重试')
           setLoading(false)
           return
         }
