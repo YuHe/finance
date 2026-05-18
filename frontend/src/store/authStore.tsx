@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { createContext, useContext, useState, ReactNode } from 'react'
 import type { UserInfo } from '../api/auth'
 
 const TOKEN_KEY = 'etf_token'
