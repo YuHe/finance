@@ -109,23 +109,7 @@ class BacktestEngine:
             print(f"[backtest] 基准({BENCHMARK_CODE})数据为空，跳过基准对比")
             benchmark_close = pd.Series(dtype=float)
 
-        # 获取调仓日（使用 all_dates 构建，避免依赖同一个可能为空的查询）
-        rebalance_dates = self.data_mgr.get_weekly_rebalance_dates(cfg.start_date, cfg.end_date)
-        if not rebalance_dates and all_dates:
-            # fallback: 从交易日列表自行计算周末调仓日
-            import pandas as _pd
-            _df = _pd.DataFrame({"date": _pd.to_datetime(all_dates)})
-            iso = _df["date"].dt.isocalendar()
-            _df["iso_year"] = iso["year"]
-            _df["iso_week"] = iso["week"]
-            weekly = _df.groupby(["iso_year", "iso_week"])["date"].max().reset_index(drop=True)
-            rebalance_dates = [d.strftime("%Y-%m-%d") for d in sorted(weekly)]
-        if cfg.rebalance_freq == "biweekly":
-            rebalance_dates = rebalance_dates[::2]
-        elif cfg.rebalance_freq == "monthly":
-            rebalance_dates = rebalance_dates[::4]
-
-        # 所有交易日
+        # 所有交易日（必须先于 rebalance_dates 获取）
         all_dates = self.data_mgr.get_trading_dates(cfg.start_date, cfg.end_date)
         if not all_dates:
             # 终极兜底：从 close_matrix index 推导交易日
@@ -135,6 +119,21 @@ class BacktestEngine:
                 print(f"[backtest] 交易日列表为空，无法回测")
                 return BacktestResult()
             print(f"[backtest] 从 close_matrix 推导交易日: {len(all_dates)}天")
+
+        # 获取调仓日
+        rebalance_dates = self.data_mgr.get_weekly_rebalance_dates(cfg.start_date, cfg.end_date)
+        if not rebalance_dates:
+            # fallback: 从交易日列表自行计算周末调仓日
+            _df = pd.DataFrame({"date": pd.to_datetime(all_dates)})
+            iso = _df["date"].dt.isocalendar()
+            _df["iso_year"] = iso["year"]
+            _df["iso_week"] = iso["week"]
+            weekly = _df.groupby(["iso_year", "iso_week"])["date"].max().reset_index(drop=True)
+            rebalance_dates = [d.strftime("%Y-%m-%d") for d in sorted(weekly)]
+        if cfg.rebalance_freq == "biweekly":
+            rebalance_dates = rebalance_dates[::2]
+        elif cfg.rebalance_freq == "monthly":
+            rebalance_dates = rebalance_dates[::4]
 
         # 预构建执行日数据缓存（避免N+1查询）
         # 从 close_matrix 中提取 open 价格矩阵

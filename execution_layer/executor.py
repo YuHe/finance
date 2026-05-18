@@ -75,10 +75,13 @@ class ExecutionEngine:
         result = ExecutionResult(signal_date="", execution_date="")
         actual_weights = dict(current_weights)
 
-        all_codes = set(list(target_weights.keys()) + list(current_weights.keys()))
-        all_codes.discard("CASH")
+        all_codes = sorted(set(list(target_weights.keys()) + list(current_weights.keys())) - {"CASH"})
 
-        for code in all_codes:
+        # 先卖后买：确保卖出释放资金后再买入，避免顺序影响结果
+        sell_codes = [c for c in all_codes if target_weights.get(c, 0) < current_weights.get(c, 0)]
+        buy_codes = [c for c in all_codes if target_weights.get(c, 0) >= current_weights.get(c, 0)]
+
+        for code in sell_codes + buy_codes:
             target_w = target_weights.get(code, 0.0)
             current_w = current_weights.get(code, 0.0)
             delta_w = target_w - current_w
