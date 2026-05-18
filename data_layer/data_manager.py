@@ -15,8 +15,8 @@ DB_PATH = os.environ.get(
 
 
 def _bs_code(code: str) -> str:
-    """将6位代码转为 baostock 格式: 6开头→sh., 其余→sz."""
-    return f"sh.{code}" if code.startswith("6") else f"sz.{code}"
+    """将6位代码转为 baostock 格式: 5/6开头→sh.(上交所), 其余→sz.(深交所)"""
+    return f"sh.{code}" if code[0] in "56" else f"sz.{code}"
 
 
 class DataManager:
