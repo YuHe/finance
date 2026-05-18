@@ -55,7 +55,7 @@ class DataManager:
 
     # ─── 数据获取 ───────────────────────────────────────────
 
-    def update_etf(self, code: str, start_date: str = "2015-01-01", end_date: str = None):
+    def update_etf(self, code: str, start_date: str = "2015-01-01", end_date: str = None, _logged_in: bool = False):
         """增量更新单只ETF历史数据（使用 BaoStock，支持境外服务器）"""
         if end_date is None:
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -71,36 +71,51 @@ class DataManager:
                 return  # 已最新
 
         try:
-            lg = bs.login()
-            if lg.error_code != "0":
-                print(f"[DataManager] BaoStock 登录失败: {lg.error_msg}")
-                return
+            if not _logged_in:
+                lg = bs.login()
+                if lg.error_code != "0":
+                    print(f"[DataManager] BaoStock 登录失败: {lg.error_msg}")
+                    return
 
-            rs = bs.query_history_k_data_plus(
+            # 获取后复权价格（用于技术指标计算）
+            rs_adj = bs.query_history_k_data_plus(
                 _bs_code(code),
-                "date,open,high,low,close,volume,amount,turn,pctChg",
+                "date,open,high,low,close,volume,amount,turn",
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
                 adjustflag="2",   # 后复权
             )
-            bs.logout()
+            # 获取不复权涨跌幅（用于涨跌停判断，避免复权调整干扰）
+            rs_raw = bs.query_history_k_data_plus(
+                _bs_code(code),
+                "date,pctChg",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="3",   # 不复权
+            )
 
-            if rs.error_code != "0":
-                print(f"[DataManager] 获取 {code} 失败: {rs.error_msg}")
+            if not _logged_in:
+                bs.logout()
+
+            if rs_adj.error_code != "0":
+                print(f"[DataManager] 获取 {code} 失败: {rs_adj.error_msg}")
                 return
 
-            rows = []
-            while rs.next():
-                rows.append(rs.get_row_data())
-            if not rows:
+            # 解析后复权数据
+            rows_adj = []
+            while rs_adj.next():
+                rows_adj.append(rs_adj.get_row_data())
+            if not rows_adj:
                 return
+            df = pd.DataFrame(rows_adj, columns=rs_adj.fields)
 
-            df = pd.DataFrame(rows, columns=rs.fields)
-            df = df.replace("", np.nan)
-            for col in ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.dropna(subset=["close"])
+            # 解析不复权涨跌幅
+            rows_raw = []
+            while rs_raw.next():
+                rows_raw.append(rs_raw.get_row_data())
+            df_raw = pd.DataFrame(rows_raw, columns=["date", "pctChg"]) if rows_raw else pd.DataFrame(columns=["date", "pctChg"])
 
         except Exception as e:
             print(f"[DataManager] 获取 {code} 失败: {e}")
@@ -109,22 +124,45 @@ class DataManager:
         if df.empty:
             return
 
+        # 数值转换
+        df = df.replace("", np.nan)
+        for col in ["open", "high", "low", "close", "volume", "amount", "turn"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["close"])
+
+        # 合并不复权涨跌幅
+        if not df_raw.empty:
+            df_raw["pctChg"] = pd.to_numeric(df_raw["pctChg"].replace("", np.nan), errors="coerce")
+            df = df.merge(df_raw, on="date", how="left")
+        else:
+            df["pctChg"] = np.nan
+
         df["code"] = code
         df["turnover"] = df["turn"]
-        df["pct_change"] = df["pctChg"] / 100
-        df["is_limit_up"] = (df["pct_change"] >= 0.098).astype(int)
-        df["is_limit_down"] = (df["pct_change"] <= -0.098).astype(int)
-        df = df[["code", "date", "open", "high", "low", "close", "volume", "amount", "turnover", "is_limit_up", "is_limit_down"]]
+        # 涨跌停：用不复权涨跌幅（%转小数），避免复权调整产生虚假涨跌停
+        pct = df["pctChg"] / 100
+        df["is_limit_up"] = (pct >= 0.098).fillna(0).astype(int)
+        df["is_limit_down"] = (pct <= -0.098).fillna(0).astype(int)
+
+        df = df[["code", "date", "open", "high", "low", "close",
+                 "volume", "amount", "turnover", "is_limit_up", "is_limit_down"]]
 
         df.to_sql("etf_daily", self.conn, if_exists="append", index=False)
         self.conn.commit()
 
     def update_all(self, start_date: str = "2015-01-01", end_date: str = None):
-        """更新ETF池所有标的 + 基准"""
+        """更新ETF池所有标的 + 基准（单次登录，批量更新）"""
+        lg = bs.login()
+        if lg.error_code != "0":
+            print(f"[DataManager] BaoStock 登录失败: {lg.error_msg}")
+            return
+
         codes = [etf["code"] for etf in ETF_POOL] + [BENCHMARK_CODE]
         for code in codes:
             print(f"  更新 {code}...")
-            self.update_etf(code, start_date, end_date)
+            self.update_etf(code, start_date, end_date, _logged_in=True)
+
+        bs.logout()
         print("全部更新完成")
 
     # ─── 数据查询 ───────────────────────────────────────────
