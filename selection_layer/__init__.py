@@ -1,3 +1,3 @@
-from .selector import Selector
+from .selector import Selector, WeightMethod
 
-__all__ = ["Selector"]
+__all__ = ["Selector", "WeightMethod"]
