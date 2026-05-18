@@ -59,7 +59,7 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         if result.nav_series is None or len(result.nav_series) == 0:
             _results[task_id] = {
                 "status": "failed",
-                "error": {"code": "NO_DATA", "message": "数据不足，请先点击"更新行情数据"获取数据"},
+                "error": {"code": "NO_DATA", "message": "数据不足，请先点击侧边栏的更新行情数据按钮"},
             }
             return
 
