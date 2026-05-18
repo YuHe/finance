@@ -49,6 +49,8 @@ class BacktestRequest(BaseModel):
     stop_loss_threshold: float = 0.08
     trailing_stop: bool = False
     trailing_stop_threshold: float = 0.05
+    # 可选：选择参与回测的 ETF 代码列表（空则全池）
+    selected_codes: list[str] = None
 
 
 def _weight_method_map(wm: str) -> str:
@@ -73,14 +75,16 @@ def _run_backtest(task_id: str, req: BacktestRequest):
             stop_loss_single=req.stop_loss_threshold if req.stop_loss_enabled else 1.0,
             stop_loss_portfolio=req.stop_loss_threshold * 1.5 if req.stop_loss_enabled else 1.0,
             stop_loss_circuit=req.stop_loss_threshold * 2.5 if req.stop_loss_enabled else 1.0,
+            selected_codes=req.selected_codes,
         )
         engine = BacktestEngine(config)
 
         # 诊断：检查可用数据
         import os as _os
         _db = _os.environ.get("ETF_DB_PATH", "NOT_SET")
-        _cm = engine.data_mgr.get_close_matrix(config.start_date, config.end_date)
-        print(f"[backtest] DB={_db} close_matrix shape={_cm.shape} start={config.start_date} end={config.end_date}")
+        codes = req.selected_codes if req.selected_codes else None
+        _cm = engine.data_mgr.get_close_matrix(config.start_date, config.end_date, codes=codes)
+        print(f"[backtest] DB={_db} close_matrix shape={_cm.shape} start={config.start_date} end={config.end_date} selected={len(req.selected_codes) if req.selected_codes else 'all'}")
 
         if _cm.empty:
             _results[task_id] = {

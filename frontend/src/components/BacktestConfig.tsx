@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import client from '../api/client'
 import type { BacktestParams } from '../api/client'
 
 interface BacktestConfigProps {
@@ -6,10 +7,17 @@ interface BacktestConfigProps {
   loading: boolean
 }
 
+interface EtfInfo {
+  code: string
+  name: string
+  industry: string
+}
+
 function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   const [params, setParams] = useState<BacktestParams>({
     start_date: '2020-01-01',
     end_date: '2024-12-31',
+    initial_capital: 1000000,
     top_n: 3,
     weight_method: 'equal',
     rebalance_freq: 'weekly',
@@ -18,20 +26,88 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
     stop_loss_threshold: 0.08,
     trailing_stop: false,
     trailing_stop_threshold: 0.05,
+    selected_codes: null,
   })
+
+  const [etfList, setEtfList] = useState<EtfInfo[]>([])
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set())
+  const [selectAll, setSelectAll] = useState(true)
+  const [showEtfPanel, setShowEtfPanel] = useState(false)
+
+  useEffect(() => {
+    client.get<{ etfs: EtfInfo[] }>('/market/etfs').then(res => {
+      setEtfList(res.data.etfs)
+    }).catch(() => {})
+  }, [])
 
   const handleChange = (field: keyof BacktestParams, value: string | number | boolean) => {
     setParams((prev) => ({ ...prev, [field]: value }))
   }
 
+  const toggleEtf = (code: string) => {
+    const next = new Set(selectedCodes)
+    if (next.has(code)) next.delete(code)
+    else next.add(code)
+    setSelectedCodes(next)
+    setSelectAll(false)
+  }
+
+  const handleSelectAll = () => {
+    if (selectAll) {
+      setSelectedCodes(new Set())
+      setSelectAll(false)
+    } else {
+      setSelectedCodes(new Set(etfList.map(e => e.code)))
+      setSelectAll(true)
+    }
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit(params)
+    const codes = selectAll ? null : (selectedCodes.size > 0 ? Array.from(selectedCodes) : null)
+    onSubmit({ ...params, selected_codes: codes })
+  }
+
+  const formatCapital = (v: number) => {
+    if (v >= 10000) return `${(v / 10000).toFixed(v % 10000 === 0 ? 0 : 1)}万`
+    return v.toLocaleString()
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       <h2 className="text-lg font-semibold text-white mb-4">回测参数配置</h2>
+
+      {/* Capital */}
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">
+          回测金额: <span className="text-green-400 font-medium">{formatCapital(params.initial_capital)}</span>
+        </label>
+        <input
+          type="number"
+          min={10000}
+          step={10000}
+          value={params.initial_capital}
+          onChange={(e) => handleChange('initial_capital', parseFloat(e.target.value) || 100000)}
+          className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="100万"
+        />
+        <div className="flex gap-2 mt-1.5">
+          {[100000, 500000, 1000000, 2000000].map(v => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => handleChange('initial_capital', v)}
+              className={`text-xs px-2 py-0.5 rounded ${
+                params.initial_capital === v
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+              }`}
+            >
+              {formatCapital(v)}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Date Range */}
       <div className="grid grid-cols-2 gap-3">
@@ -53,6 +129,64 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
             className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
+      </div>
+
+      {/* ETF Selection */}
+      <div className="space-y-2 p-3 bg-gray-800 rounded-lg border border-gray-700">
+        <div className="flex items-center justify-between">
+          <label className="text-xs text-gray-400">
+            参与回测 ETF: <span className="text-blue-400 font-medium">
+              {selectAll ? '全部' : `${selectedCodes.size}/${etfList.length}`}
+            </span>
+          </label>
+          <button
+            type="button"
+            onClick={() => setShowEtfPanel(!showEtfPanel)}
+            className="text-xs text-blue-400 hover:text-blue-300"
+          >
+            {showEtfPanel ? '收起' : '选择'}
+          </button>
+        </div>
+        {showEtfPanel && (
+          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+            <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer px-1 py-0.5 rounded hover:bg-gray-700">
+              <input
+                type="checkbox"
+                checked={selectAll}
+                onChange={handleSelectAll}
+                className="w-3.5 h-3.5 accent-blue-500"
+              />
+              <span className="font-medium">全选 / 全不选</span>
+            </label>
+            <div className="border-t border-gray-700 my-1" />
+            {etfList.map(etf => (
+              <label
+                key={etf.code}
+                className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer px-1 py-0.5 rounded hover:bg-gray-700"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectAll || selectedCodes.has(etf.code)}
+                  onChange={() => {
+                    if (selectAll) {
+                      // 从全选切换到取消某一个
+                      const all = new Set(etfList.map(e => e.code))
+                      all.delete(etf.code)
+                      setSelectedCodes(all)
+                      setSelectAll(false)
+                    } else {
+                      toggleEtf(etf.code)
+                    }
+                  }}
+                  className="w-3.5 h-3.5 accent-blue-500"
+                />
+                <span className="text-gray-500 font-mono">{etf.code}</span>
+                <span>{etf.name}</span>
+                <span className="text-gray-600 ml-auto">{etf.industry}</span>
+              </label>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Top N */}

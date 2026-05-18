@@ -32,6 +32,29 @@ def get_etf_pool():
     return {"etfs": ETF_POOL, "benchmark": {"code": BENCHMARK_CODE, "name": BENCHMARK_NAME}}
 
 
+@router.get("/data-status")
+def get_data_status():
+    """获取所有 ETF 的数据覆盖状态（日期范围、记录数）"""
+    dm = DataManager()
+    status_list = dm.get_data_status()
+    # 合并 ETF 名称和行业信息
+    pool_map = {etf["code"]: etf for etf in ETF_POOL}
+    result = []
+    for item in status_list:
+        code = item["code"]
+        etf_info = pool_map.get(code, {})
+        result.append({
+            "code": code,
+            "name": etf_info.get("name", BENCHMARK_NAME if code == BENCHMARK_CODE else code),
+            "industry": etf_info.get("industry", "基准" if code == BENCHMARK_CODE else ""),
+            "start_date": item["start_date"],
+            "end_date": item["end_date"],
+            "count": item["count"],
+            "has_data": item["count"] > 0,
+        })
+    return {"data": result}
+
+
 @router.get("/kline/{code}")
 def get_kline(code: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
     """K线数据"""

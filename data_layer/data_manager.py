@@ -203,9 +203,10 @@ class DataManager:
         codes = [etf["code"] for etf in ETF_POOL]
         return {code: self.get_daily(code, start_date, end_date) for code in codes}
 
-    def get_close_matrix(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    def get_close_matrix(self, start_date: str = None, end_date: str = None, codes: list = None) -> pd.DataFrame:
         """获取收盘价矩阵 (date x code)"""
-        codes = [etf["code"] for etf in ETF_POOL]
+        if codes is None:
+            codes = [etf["code"] for etf in ETF_POOL]
         frames = []
         for code in codes:
             df = self.get_daily(code, start_date, end_date)
@@ -215,9 +216,10 @@ class DataManager:
             return pd.DataFrame()
         return pd.concat(frames, axis=1).sort_index()
 
-    def get_amount_matrix(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    def get_amount_matrix(self, start_date: str = None, end_date: str = None, codes: list = None) -> pd.DataFrame:
         """获取成交额矩阵 (date x code)"""
-        codes = [etf["code"] for etf in ETF_POOL]
+        if codes is None:
+            codes = [etf["code"] for etf in ETF_POOL]
         frames = []
         for code in codes:
             df = self.get_daily(code, start_date, end_date)
@@ -227,9 +229,10 @@ class DataManager:
             return pd.DataFrame()
         return pd.concat(frames, axis=1).sort_index()
 
-    def get_open_matrix(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    def get_open_matrix(self, start_date: str = None, end_date: str = None, codes: list = None) -> pd.DataFrame:
         """获取开盘价矩阵 (date x code)"""
-        codes = [etf["code"] for etf in ETF_POOL]
+        if codes is None:
+            codes = [etf["code"] for etf in ETF_POOL]
         frames = []
         for code in codes:
             df = self.get_daily(code, start_date, end_date)
@@ -279,6 +282,23 @@ class DataManager:
         # 每周最后一个交易日
         weekly = df.groupby(["iso_year", "iso_week"])["date"].max().reset_index(drop=True)
         return [d.strftime("%Y-%m-%d") for d in sorted(weekly)]
+
+    def get_data_status(self) -> list[dict]:
+        """获取所有 ETF + 基准的数据状态（日期范围、记录数）"""
+        all_codes = [etf["code"] for etf in ETF_POOL] + [BENCHMARK_CODE]
+        results = []
+        for code in all_codes:
+            row = self.conn.execute(
+                "SELECT MIN(date), MAX(date), COUNT(*) FROM etf_daily WHERE code = ?",
+                (code,)
+            ).fetchone()
+            results.append({
+                "code": code,
+                "start_date": row[0] or None,
+                "end_date": row[1] or None,
+                "count": row[2] or 0,
+            })
+        return results
 
     def close(self):
         if hasattr(self._local, "conn") and self._local.conn:

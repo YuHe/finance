@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import BacktestPage from './pages/BacktestPage'
 import SignalPage from './pages/SignalPage'
 import PortfolioPage from './pages/PortfolioPage'
+import DataPage from './pages/DataPage'
 import AdminPage from './pages/AdminPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -33,6 +34,7 @@ function AppRoutes() {
       >
         <Route index element={<Navigate to="/backtest" replace />} />
         <Route path="backtest" element={<BacktestPage />} />
+        <Route path="data" element={<DataPage />} />
         <Route path="signal" element={<SignalPage />} />
         <Route path="portfolio" element={<PortfolioPage />} />
         <Route

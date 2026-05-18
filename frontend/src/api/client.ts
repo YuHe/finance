@@ -56,6 +56,7 @@ export interface ApiResponse<T> {
 export interface BacktestParams {
   start_date: string
   end_date: string
+  initial_capital: number
   top_n: number
   weight_method: 'equal' | 'momentum_weighted' | 'inverse_volatility'
   rebalance_freq: 'weekly' | 'biweekly' | 'monthly'
@@ -64,6 +65,7 @@ export interface BacktestParams {
   stop_loss_threshold: number
   trailing_stop: boolean
   trailing_stop_threshold: number
+  selected_codes: string[] | null
 }
 
 export interface BacktestResult {
