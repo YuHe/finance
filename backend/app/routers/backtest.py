@@ -1,8 +1,8 @@
 """回测 API"""
 
 from fastapi import APIRouter, BackgroundTasks
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, Union
 import uuid
 import time
 import sys
@@ -50,7 +50,7 @@ class BacktestRequest(BaseModel):
     trailing_stop: bool = False
     trailing_stop_threshold: float = 0.05
     # 可选：选择参与回测的 ETF 代码列表（空则全池）
-    selected_codes: list[str] = None
+    selected_codes: Optional[list[str]] = Field(default=None)
 
 
 def _weight_method_map(wm: str) -> str:
@@ -175,6 +175,24 @@ def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
     _results[task_id] = {"status": "running", "_ts": time.time()}
     background_tasks.add_task(_run_backtest, task_id, req)
     return {"success": True, "data": {"id": task_id}, "error": None}
+
+
+from fastapi import Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+
+@router.api_route("/run-debug", methods=["POST"])
+async def run_debug(request: Request):
+    """临时调试：打印原始 body 和验证错误"""
+    body = await request.json()
+    print(f"[backtest-debug] raw body: {body}")
+    try:
+        req = BacktestRequest(**body)
+        return {"success": True, "parsed": req.model_dump()}
+    except Exception as e:
+        print(f"[backtest-debug] validation error: {e}")
+        return JSONResponse(status_code=422, content={"detail": str(e)})
 
 
 @router.get("/result/{task_id}")

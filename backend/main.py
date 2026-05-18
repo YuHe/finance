@@ -4,8 +4,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.database import engine
 from app.models.user import User  # noqa: ensure table is registered
@@ -18,6 +20,19 @@ from app.deps import get_current_user
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="ETF轮动系统", version="2.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """打印详细的请求校验错误到日志"""
+    print(f"[422] {request.method} {request.url.path}")
+    print(f"[422] errors: {exc.errors()}")
+    try:
+        body = await request.body()
+        print(f"[422] body: {body.decode()[:2000]}")
+    except Exception:
+        pass
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 app.add_middleware(
     CORSMiddleware,
