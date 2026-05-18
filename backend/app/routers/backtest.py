@@ -54,11 +54,25 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         )
         engine = BacktestEngine(config)
 
-        # 诊断日志
+        # 诊断：检查可用数据
         import os as _os
         _db = _os.environ.get("ETF_DB_PATH", "NOT_SET")
         _cm = engine.data_mgr.get_close_matrix(config.start_date, config.end_date)
         print(f"[backtest] DB={_db} close_matrix shape={_cm.shape} start={config.start_date} end={config.end_date}")
+
+        if _cm.empty:
+            _results[task_id] = {
+                "status": "failed",
+                "error": {"code": "NO_DATA", "message": "数据库中没有ETF数据，请先点击侧边栏更新行情数据"},
+            }
+            return
+        if _cm.shape[1] < config.top_n:
+            _results[task_id] = {
+                "status": "failed",
+                "error": {"code": "INSUFFICIENT_DATA",
+                          "message": f"可用ETF数({_cm.shape[1]})不足，需要至少{config.top_n}个，请重新更新行情数据"},
+            }
+            return
 
         result = engine.run()
 
@@ -66,7 +80,7 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         if result.nav_series is None or len(result.nav_series) == 0:
             _results[task_id] = {
                 "status": "failed",
-                "error": {"code": "NO_DATA", "message": "数据不足，请先点击侧边栏的更新行情数据按钮"},
+                "error": {"code": "NO_DATA", "message": f"回测区间内数据不足（可用ETF:{_cm.shape[1]}个），请尝试缩短回测时间范围"},
             }
             return
 

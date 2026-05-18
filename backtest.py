@@ -87,11 +87,23 @@ class BacktestEngine:
         amount_matrix = self.data_mgr.get_amount_matrix(cfg.start_date, cfg.end_date)
         benchmark_df = self.data_mgr.get_daily(BENCHMARK_CODE, cfg.start_date, cfg.end_date)
 
-        if close_matrix.empty or benchmark_df.empty:
-            print("数据不足，请先运行 data_layer.DataManager().update_all()")
+        if close_matrix.empty:
+            print(f"[backtest] close_matrix 为空，无法回测 (start={cfg.start_date} end={cfg.end_date})")
             return BacktestResult()
 
-        benchmark_close = benchmark_df.set_index("date")["close"]
+        n_etfs = close_matrix.shape[1]
+        if n_etfs < cfg.top_n:
+            print(f"[backtest] 可用ETF数({n_etfs})少于 top_n({cfg.top_n})，无法选股")
+            return BacktestResult()
+
+        print(f"[backtest] 可用ETF数={n_etfs}, 日期={close_matrix.index[0]}~{close_matrix.index[-1]}")
+
+        # 基准数据可选：为空时跳过基准对比
+        if not benchmark_df.empty:
+            benchmark_close = benchmark_df.set_index("date")["close"]
+        else:
+            print(f"[backtest] 基准({BENCHMARK_CODE})数据为空，跳过基准对比")
+            benchmark_close = pd.Series(dtype=float)
 
         # 获取调仓日
         rebalance_dates = self.data_mgr.get_weekly_rebalance_dates(cfg.start_date, cfg.end_date)
