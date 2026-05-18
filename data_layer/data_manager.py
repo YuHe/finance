@@ -2,7 +2,7 @@
 
 import os
 import sqlite3
-import akshare as ak
+import baostock as bs
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -12,6 +12,11 @@ DB_PATH = os.environ.get(
     "ETF_DB_PATH",
     os.path.join(os.path.dirname(__file__), "etf_data.db")
 )
+
+
+def _bs_code(code: str) -> str:
+    """将6位代码转为 baostock 格式: 6开头→sh., 其余→sz."""
+    return f"sh.{code}" if code.startswith("6") else f"sz.{code}"
 
 
 class DataManager:
@@ -50,55 +55,71 @@ class DataManager:
 
     # ─── 数据获取 ───────────────────────────────────────────
 
-    def update_etf(self, code: str, start_date: str = "20150101", end_date: str = None):
-        """增量更新单只ETF历史数据"""
+    def update_etf(self, code: str, start_date: str = "2015-01-01", end_date: str = None):
+        """增量更新单只ETF历史数据（使用 BaoStock，支持境外服务器）"""
         if end_date is None:
-            end_date = datetime.now().strftime("%Y%m%d")
+            end_date = datetime.now().strftime("%Y-%m-%d")
 
-        # 查询已有最新日期
+        # 查询已有最新日期，做增量更新
         row = self.conn.execute(
             "SELECT MAX(date) FROM etf_daily WHERE code = ?", (code,)
         ).fetchone()
         if row[0]:
             last = pd.to_datetime(row[0]) + timedelta(days=1)
-            start_date = last.strftime("%Y%m%d")
+            start_date = last.strftime("%Y-%m-%d")
             if start_date > end_date:
                 return  # 已最新
 
         try:
-            df = ak.fund_etf_hist_em(
-                symbol=code, period="daily",
-                start_date=start_date, end_date=end_date, adjust="hfq"
+            lg = bs.login()
+            if lg.error_code != "0":
+                print(f"[DataManager] BaoStock 登录失败: {lg.error_msg}")
+                return
+
+            rs = bs.query_history_k_data_plus(
+                _bs_code(code),
+                "date,open,high,low,close,volume,amount,turn,pctChg",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="2",   # 后复权
             )
+            bs.logout()
+
+            if rs.error_code != "0":
+                print(f"[DataManager] 获取 {code} 失败: {rs.error_msg}")
+                return
+
+            rows = []
+            while rs.next():
+                rows.append(rs.get_row_data())
+            if not rows:
+                return
+
+            df = pd.DataFrame(rows, columns=rs.fields)
+            df = df.replace("", np.nan)
+            for col in ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna(subset=["close"])
+
         except Exception as e:
             print(f"[DataManager] 获取 {code} 失败: {e}")
             return
 
-        if df is None or df.empty:
-            return
-
-        df = df.rename(columns={
-            "日期": "date", "开盘": "open", "收盘": "close",
-            "最高": "high", "最低": "low",
-            "成交量": "volume", "成交额": "amount", "换手率": "turnover"
-        })
-        df["code"] = code
-        df = df[["code", "date", "open", "high", "low", "close", "volume", "amount", "turnover"]]
-
-        # 计算涨跌停标记（涨幅>=9.8% 或 跌幅<=-9.8%）
-        df["close_prev"] = df["close"].shift(1)
-        df["pct_change"] = (df["close"] - df["close_prev"]) / df["close_prev"]
-        df["is_limit_up"] = (df["pct_change"] >= 0.098).astype(int)
-        df["is_limit_down"] = (df["pct_change"] <= -0.098).astype(int)
-        df = df.drop(columns=["close_prev", "pct_change"]).iloc[1:]  # 去掉第一行无前日价
-
         if df.empty:
             return
+
+        df["code"] = code
+        df["turnover"] = df["turn"]
+        df["pct_change"] = df["pctChg"] / 100
+        df["is_limit_up"] = (df["pct_change"] >= 0.098).astype(int)
+        df["is_limit_down"] = (df["pct_change"] <= -0.098).astype(int)
+        df = df[["code", "date", "open", "high", "low", "close", "volume", "amount", "turnover", "is_limit_up", "is_limit_down"]]
 
         df.to_sql("etf_daily", self.conn, if_exists="append", index=False)
         self.conn.commit()
 
-    def update_all(self, start_date: str = "20150101", end_date: str = None):
+    def update_all(self, start_date: str = "2015-01-01", end_date: str = None):
         """更新ETF池所有标的 + 基准"""
         codes = [etf["code"] for etf in ETF_POOL] + [BENCHMARK_CODE]
         for code in codes:
