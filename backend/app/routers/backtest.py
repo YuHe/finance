@@ -7,6 +7,7 @@ import uuid
 import time
 import sys
 import os
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -20,6 +21,24 @@ router = APIRouter()
 _results: dict = {}
 _RESULT_TTL = 3600  # 结果保留1小时
 _MAX_RESULTS = 50   # 最多保留50个结果
+
+
+def _calc_beta(nav_series, benchmark_series) -> float:
+    """计算策略相对基准的 Beta (CAPM)"""
+    if nav_series is None or benchmark_series is None:
+        return 0.0
+    if len(nav_series) < 5 or len(benchmark_series) < 5:
+        return 0.0
+    strat_returns = np.diff(np.array(nav_series, dtype=float)) / np.array(nav_series[:-1], dtype=float)
+    bench_returns = np.diff(np.array(benchmark_series, dtype=float)) / np.array(benchmark_series[:-1], dtype=float)
+    min_len = min(len(strat_returns), len(bench_returns))
+    strat_returns = strat_returns[:min_len]
+    bench_returns = bench_returns[:min_len]
+    var_bench = np.var(bench_returns)
+    if var_bench < 1e-12:
+        return 0.0
+    cov = np.cov(strat_returns, bench_returns)[0, 1]
+    return float(cov / var_bench)
 
 
 def _cleanup_results():
@@ -165,7 +184,10 @@ def _run_backtest(task_id: str, req: BacktestRequest):
                 "volatility": result.annual_volatility,
                 "benchmark_return": bm_return,
                 "alpha": result.annual_return - bm_return,
-                "beta": 1.0,  # 暂不计算
+                "beta": _calc_beta(
+                    result.nav_series.values if result.nav_series is not None else None,
+                    result.benchmark_series.values if result.benchmark_series is not None else None,
+                ),
             },
             "nav_history": nav_history,
             "benchmark_history": benchmark_history,
@@ -279,7 +301,10 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
                 "volatility": result.annual_volatility,
                 "benchmark_return": bm_return,
                 "alpha": result.annual_return - bm_return,
-                "beta": 1.0,
+                "beta": _calc_beta(
+                    result.nav_series.values if result.nav_series is not None else None,
+                    bm_nav.values if len(benchmark_history) > 0 else None,
+                ),
             },
             "nav_history": nav_history,
             "benchmark_history": benchmark_history,
