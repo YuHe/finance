@@ -15,6 +15,7 @@ interface EtfDataStatus {
 function DataPage() {
   const [dataStatus, setDataStatus] = useState<EtfDataStatus[]>([])
   const [loading, setLoading] = useState(true)
+  const [resetting, setResetting] = useState(false)
   const [klineTarget, setKlineTarget] = useState<{ code: string; name: string } | null>(null)
 
   const fetchStatus = async () => {
@@ -76,8 +77,25 @@ function DataPage() {
         </div>
       </div>
 
-      {/* 刷新按钮 */}
-      <div className="flex justify-end mb-3">
+      {/* 操作按钮 */}
+      <div className="flex justify-end gap-2 mb-3">
+        <button
+          onClick={async () => {
+            if (!confirm('确认清空所有数据并全量重拉？\n此操作会删除现有数据，BaoStock当前仅能拉取2026年数据。')) return
+            setResetting(true)
+            try {
+              await client.post('/market/reset')
+            } catch (e) {
+              console.error('Reset failed', e)
+            } finally {
+              setResetting(false)
+            }
+          }}
+          disabled={resetting}
+          className="text-xs bg-red-900/40 hover:bg-red-900/60 text-red-400 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+        >
+          {resetting ? '重置中...' : '清空并重拉数据'}
+        </button>
         <button
           onClick={() => { setLoading(true); fetchStatus() }}
           className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1.5 rounded-lg transition-colors"

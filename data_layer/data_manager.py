@@ -181,6 +181,11 @@ class DataManager:
         bs.logout()
         print("全部更新完成")
 
+    def clear_all_data(self):
+        """清空所有ETF日频数据（用于重拉修复数据断裂）"""
+        self.conn.execute("DELETE FROM etf_daily")
+        self.conn.commit()
+
     # ─── 数据查询 ───────────────────────────────────────────
 
     def get_daily(self, code: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:

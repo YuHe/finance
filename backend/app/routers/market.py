@@ -93,6 +93,17 @@ def trigger_update(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
+@router.post("/reset")
+def trigger_reset(background_tasks: BackgroundTasks):
+    """清空所有数据后全量重拉（修复数据断裂）"""
+    with _update_lock:
+        if _update_state["status"] == "running":
+            return {"status": "running", "message": "更新已在进行中"}
+        _update_state["status"] = "running"
+    background_tasks.add_task(_do_reset_and_update)
+    return {"status": "started", "message": "已清空数据，开始全量重拉"}
+
+
 @router.get("/update/status")
 def get_update_status():
     """获取更新进度"""
@@ -168,3 +179,12 @@ def _do_update():
                                "message": f"完成，{len(errors)} 个标的失败"})
     else:
         _update_state.update({"status": "done", "progress": total, "message": "全部更新完成"})
+
+
+def _do_reset_and_update():
+    """清空数据后全量重拉"""
+    _update_state.update({"status": "running", "progress": 0, "total": 0, "message": "清空旧数据...", "items": []})
+    dm = DataManager()
+    dm.clear_all_data()
+    _update_state["message"] = "旧数据已清空，开始全量拉取..."
+    _do_update()
