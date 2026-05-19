@@ -174,13 +174,7 @@ class HunterStrategy(BaseStrategy):
                         if current_price < stop_level:
                             stopped_out.append(code)
 
-            for code in stopped_out:
-                stopped_weight = holdings[code]["weight"]
-                del holdings[code]
-                trades.append({"date": str(date), "code": code, "action": "stop_loss",
-                               "weight": stopped_weight})
-
-            # 每日P&L
+            # 每日P&L（必须在删除止损仓位之前计算，否则止损日亏损会丢失）
             daily_pnl = 0
             if holdings:
                 total_w = sum(info["weight"] for info in holdings.values())
@@ -191,6 +185,12 @@ class HunterStrategy(BaseStrategy):
                         if not np.isnan(returns_matrix[c].iloc[i])
                     )
                     equity *= (1 + daily_pnl)
+
+            for code in stopped_out:
+                stopped_weight = holdings[code]["weight"]
+                del holdings[code]
+                trades.append({"date": str(date), "code": code, "action": "stop_loss",
+                               "weight": stopped_weight})
 
             recent_daily_rets.append(daily_pnl)
             if len(recent_daily_rets) > 10:
@@ -248,6 +248,13 @@ class HunterStrategy(BaseStrategy):
                     if code not in valid_mask.index or not valid_mask.get(code, False):
                         scores_today[code] = -999
                 scores_today = scores_today[scores_today > 0]
+
+                # 排除当日止损的ETF（同价卖买无意义，且避免无效手续费）
+                if stopped_out:
+                    scores_today = scores_today.drop(
+                        labels=[c for c in stopped_out if c in scores_today.index],
+                        errors='ignore'
+                    )
 
                 # VR 软权重（基于昨日及之前数据）
                 if self.use_vr_weight and len(scores_today) > 0:
