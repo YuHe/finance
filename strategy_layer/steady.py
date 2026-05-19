@@ -127,12 +127,15 @@ class SteadyStrategy(BaseStrategy):
 
             # 极端熊市清仓
             if is_severe and holdings:
-                total_w = sum(info["weight"] for info in holdings.values())
+                valid_items = [
+                    (c, info) for c, info in holdings.items()
+                    if not np.isnan(returns_matrix[c].iloc[i])
+                ]
+                total_w = sum(info["weight"] for _, info in valid_items)
                 if total_w > 0:
                     daily_ret = sum(
                         info["weight"] / total_w * float(returns_matrix[c].iloc[i])
-                        for c, info in holdings.items()
-                        if not np.isnan(returns_matrix[c].iloc[i])
+                        for c, info in valid_items
                     )
                     equity *= (1 + daily_ret)
                     recent_daily_rets.append(daily_ret)
@@ -180,12 +183,16 @@ class SteadyStrategy(BaseStrategy):
             # 每日P&L（必须在删除止损仓位之前计算，否则止损日亏损会丢失）
             daily_pnl = 0
             if holdings:
-                total_w = sum(info["weight"] for info in holdings.values())
+                # 只对有有效收益的持仓计算加权收益（排除停牌/NaN）
+                valid_items = [
+                    (c, info) for c, info in holdings.items()
+                    if not np.isnan(returns_matrix[c].iloc[i])
+                ]
+                total_w = sum(info["weight"] for _, info in valid_items)
                 if total_w > 0:
                     daily_pnl = sum(
                         info["weight"] / total_w * float(returns_matrix[c].iloc[i])
-                        for c, info in holdings.items()
-                        if not np.isnan(returns_matrix[c].iloc[i])
+                        for c, info in valid_items
                     )
                     equity *= (1 + daily_pnl)
 
@@ -239,8 +246,9 @@ class SteadyStrategy(BaseStrategy):
             # 信号基于 i-1 (昨日收盘) 计算，入场用 i (今日收盘) 执行 → 消除同Bar偏差
             need_rebal = (i - last_rebal >= self.rebal_period)
             if need_rebal and not is_severe:
-                # 新周期开始时清除排除列表
-                excluded_codes.clear()
+                # 新周期开始：清除上周期排除项，但保留今天止损的ETF
+                today_stopped = set(stopped_out)
+                excluded_codes = today_stopped.copy()
 
                 scores_today = compute_composite_scores(close_matrix, i - 1)
                 if scores_today.empty:
@@ -291,13 +299,15 @@ class SteadyStrategy(BaseStrategy):
                     }
 
                     if new_holdings:
-                        old_set = set(holdings.keys())
-                        new_set = set(new_holdings.keys())
-                        if old_set != new_set:
-                            turnover = len(old_set.symmetric_difference(new_set)) / max(len(old_set | new_set), 1)
+                        # 计算真实换手率：基于权重差异而非仅代码变化
+                        old_weights = {c: info["weight"] for c, info in holdings.items()}
+                        new_weights = {c: info["weight"] for c, info in new_holdings.items()}
+                        all_codes = set(old_weights.keys()) | set(new_weights.keys())
+                        turnover = sum(abs(new_weights.get(c, 0) - old_weights.get(c, 0)) for c in all_codes) / 2
+                        if turnover > 0.01:  # 忽略极小权重调整
                             equity *= (1 - FEE_RATE * turnover * 2)
                             trades.append({"date": str(date), "action": "rebalance",
-                                           "codes": list(new_set),
+                                           "codes": list(new_holdings.keys()),
                                            "weights": {c: h["weight"] for c, h in new_holdings.items()}})
 
                         holdings = new_holdings
