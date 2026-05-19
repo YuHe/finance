@@ -271,20 +271,55 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
                 ]
                 bm_return = float(bm_nav.iloc[-1] - 1)
 
-        # 交易记录格式化
-        trades = [
-            {
-                "date": t.get("date", ""),
-                "etf_code": t.get("code", t.get("codes", [""])[0] if "codes" in t else ""),
-                "etf_name": "",
-                "direction": "sell" if t.get("action") in ("stop_loss", "regime_liquidate", "dd_brake_3d", "dd_brake_5d") else "buy",
-                "price": 0,
-                "volume": 0,
-                "amount": 0,
-                "reason": t.get("action", ""),
-            }
-            for t in result.trades[:500]
-        ]
+        # 交易记录格式化 — 从 close_matrix 反查价格, 用 nav 反推金额
+        from data_layer.etf_pool import ETF_POOL
+        _etf_names = {e["code"]: e["name"] for e in ETF_POOL}
+
+        # Build nav lookup: date_str -> nav_value
+        nav_lookup = {str(idx): float(v) for idx, v in result.nav_series.items()}
+
+        trades = []
+        for t in result.trades[:500]:
+            date_str = t.get("date", "")
+            action = t.get("action", "")
+            is_sell = action in ("stop_loss", "regime_liquidate", "dd_brake_3d", "dd_brake_5d")
+
+            # Get codes involved
+            if "codes" in t:
+                codes_list = t["codes"]
+            elif "code" in t:
+                codes_list = [t["code"]]
+            else:
+                codes_list = []
+
+            # Lookup nav at trade date to estimate position size
+            nav_at_trade = nav_lookup.get(date_str, 1.0)
+            portfolio_value = req.initial_capital * nav_at_trade
+            per_etf_amount = portfolio_value / max(len(codes_list), 1)
+
+            for code in codes_list:
+                # Lookup price from close_matrix
+                price = 0.0
+                try:
+                    date_idx = close_matrix.index.get_loc(pd.Timestamp(date_str))
+                    if code in close_matrix.columns:
+                        price = float(close_matrix[code].iloc[date_idx])
+                except (KeyError, IndexError):
+                    pass
+
+                volume = int(per_etf_amount / price / 100) * 100 if price > 0 else 0
+                amount = volume * price if volume > 0 else per_etf_amount
+
+                trades.append({
+                    "date": date_str,
+                    "etf_code": code,
+                    "etf_name": _etf_names.get(code, code),
+                    "direction": "sell" if is_sell else "buy",
+                    "price": round(price, 4),
+                    "volume": volume,
+                    "amount": round(amount, 2),
+                    "reason": action,
+                })
 
         _results[task_id] = {
             "status": "completed", "_ts": time.time(),
