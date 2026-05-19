@@ -25,6 +25,7 @@ COPY factor_layer/ /app/factor_layer/
 COPY regime_layer/ /app/regime_layer/
 COPY selection_layer/ /app/selection_layer/
 COPY execution_layer/ /app/execution_layer/
+COPY strategy_layer/ /app/strategy_layer/
 COPY llm_layer/ /app/llm_layer/
 COPY backtest.py /app/backtest.py
 
