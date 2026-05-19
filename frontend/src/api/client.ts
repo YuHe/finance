@@ -137,37 +137,26 @@ export interface RecommendedETF {
   weight: number
 }
 
-// Portfolio types
-export interface Position {
-  etf_code: string
-  etf_name: string
-  industry: string
-  shares: number
-  avg_cost: number
-  current_price: number
-  market_value: number
-  pnl: number
-  pnl_pct: number
-  weight: number
-}
-
-export interface PortfolioPerformance {
-  nav_history: NavPoint[]
-  total_value: number
-  total_pnl: number
-  total_pnl_pct: number
-  cash: number
-  positions_value: number
-}
-
-export interface PortfolioTrade {
-  id: string
+// Kline types
+export interface KlineDataPoint {
   date: string
-  etf_code: string
-  etf_name: string
-  direction: 'buy' | 'sell'
-  price: number
+  open: number
+  high: number
+  low: number
+  close: number
   volume: number
   amount: number
-  signal_id: string | null
 }
+
+export async function fetchKlineData(
+  code: string,
+  startDate?: string,
+  endDate?: string
+): Promise<KlineDataPoint[]> {
+  const params: Record<string, string> = {}
+  if (startDate) params.start_date = startDate
+  if (endDate) params.end_date = endDate
+  const res = await client.get<{ data: KlineDataPoint[] }>(`/market/kline/${code}`, { params })
+  return res.data.data
+}
+

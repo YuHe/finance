@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import client from '../api/client'
+import KlineModal from '../components/KlineModal'
 
 interface EtfDataStatus {
   code: string
@@ -14,6 +15,7 @@ interface EtfDataStatus {
 function DataPage() {
   const [dataStatus, setDataStatus] = useState<EtfDataStatus[]>([])
   const [loading, setLoading] = useState(true)
+  const [klineTarget, setKlineTarget] = useState<{ code: string; name: string } | null>(null)
 
   const fetchStatus = async () => {
     try {
@@ -107,7 +109,15 @@ function DataPage() {
                 }`}
               >
                 <td className="px-4 py-2.5 text-gray-300 font-mono text-xs">{item.code}</td>
-                <td className="px-4 py-2.5 text-white">{item.name}</td>
+                <td className="px-4 py-2.5">
+                  <button
+                    className="text-blue-400 hover:underline text-left"
+                    onClick={() => item.has_data && setKlineTarget({ code: item.code, name: item.name })}
+                    disabled={!item.has_data}
+                  >
+                    {item.name}
+                  </button>
+                </td>
                 <td className="px-4 py-2.5 text-gray-400">{item.industry}</td>
                 <td className="px-4 py-2.5 text-gray-300 font-mono text-xs">
                   {item.start_date || '—'}
@@ -134,6 +144,15 @@ function DataPage() {
       <p className="text-xs text-gray-500 mt-4">
         提示：回测时间范围应在所选 ETF 的公共数据覆盖区间内。可在回测页面勾选参与回测的 ETF 并设置金额。
       </p>
+
+      {/* Kline Modal */}
+      {klineTarget && (
+        <KlineModal
+          code={klineTarget.code}
+          name={klineTarget.name}
+          onClose={() => setKlineTarget(null)}
+        />
+      )}
     </div>
   )
 }

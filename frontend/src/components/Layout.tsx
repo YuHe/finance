@@ -7,8 +7,6 @@ const navItems = [
   { path: '/backtest', label: '回测', icon: '📊' },
   { path: '/strategy', label: '策略', icon: '🧠' },
   { path: '/data', label: '数据', icon: '💾' },
-  { path: '/signal', label: '信号', icon: '📡' },
-  { path: '/portfolio', label: '模拟盘', icon: '💼' },
   { path: '/llm', label: 'AI设置', icon: '🤖' },
 ]
 

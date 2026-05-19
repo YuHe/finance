@@ -4,12 +4,14 @@ import type { ApiResponse, BacktestParams, BacktestResult, TradeRecord } from '.
 import BacktestConfig from '../components/BacktestConfig'
 import NavChart from '../components/NavChart'
 import MetricsPanel from '../components/MetricsPanel'
+import KlineModal from '../components/KlineModal'
 import dayjs from 'dayjs'
 
 function BacktestPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [klineTarget, setKlineTarget] = useState<{ code: string; name: string } | null>(null)
 
   const pollResult = useCallback(async (id: string) => {
     const maxAttempts = 60
@@ -131,8 +133,13 @@ function BacktestPage() {
                         {dayjs(trade.date).format('YYYY-MM-DD')}
                       </td>
                       <td className="px-4 py-2.5">
-                        <span className="text-white">{trade.etf_name}</span>
-                        <span className="text-xs text-gray-500 ml-1">{trade.etf_code}</span>
+                        <button
+                          className="text-left hover:underline"
+                          onClick={() => setKlineTarget({ code: trade.etf_code, name: trade.etf_name })}
+                        >
+                          <span className="text-blue-400">{trade.etf_name}</span>
+                          <span className="text-xs text-gray-500 ml-1">{trade.etf_code}</span>
+                        </button>
                       </td>
                       <td className="px-4 py-2.5 text-center">
                         <span
@@ -175,6 +182,16 @@ function BacktestPage() {
           </div>
         )}
       </div>
+
+      {/* Kline Modal */}
+      {klineTarget && (
+        <KlineModal
+          code={klineTarget.code}
+          name={klineTarget.name}
+          trades={result?.trades || []}
+          onClose={() => setKlineTarget(null)}
+        />
+      )}
     </div>
   )
 }

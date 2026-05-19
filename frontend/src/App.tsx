@@ -3,8 +3,6 @@ import { AuthProvider, useAuth } from './store/authStore'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
 import BacktestPage from './pages/BacktestPage'
-import SignalPage from './pages/SignalPage'
-import PortfolioPage from './pages/PortfolioPage'
 import DataPage from './pages/DataPage'
 import AdminPage from './pages/AdminPage'
 import LLMSettingsPage from './pages/LLMSettingsPage'
@@ -38,8 +36,6 @@ function AppRoutes() {
         <Route path="backtest" element={<BacktestPage />} />
         <Route path="strategy" element={<StrategyPage />} />
         <Route path="data" element={<DataPage />} />
-        <Route path="signal" element={<SignalPage />} />
-        <Route path="portfolio" element={<PortfolioPage />} />
         <Route path="llm" element={<LLMSettingsPage />} />
         <Route
           path="admin"
