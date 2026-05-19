@@ -178,9 +178,11 @@ class SteadyStrategy(BaseStrategy):
                             stopped_out.append(code)
 
             for code in stopped_out:
+                stopped_weight = holdings[code]["weight"]
                 del holdings[code]
                 excluded_codes.add(code)  # Steady特有: 加入排除集合
-                trades.append({"date": str(date), "code": code, "action": "stop_loss"})
+                trades.append({"date": str(date), "code": code, "action": "stop_loss",
+                               "weight": stopped_weight})
 
             # 每日P&L
             daily_pnl = 0
@@ -294,7 +296,8 @@ class SteadyStrategy(BaseStrategy):
                             turnover = len(old_set.symmetric_difference(new_set)) / max(len(old_set | new_set), 1)
                             equity *= (1 - FEE_RATE * turnover * 2)
                             trades.append({"date": str(date), "action": "rebalance",
-                                           "codes": list(new_set)})
+                                           "codes": list(new_set),
+                                           "weights": {c: h["weight"] for c, h in new_holdings.items()}})
 
                         holdings = new_holdings
                         last_rebal = i

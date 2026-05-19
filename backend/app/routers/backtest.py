@@ -271,7 +271,7 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
                 ]
                 bm_return = float(bm_nav.iloc[-1] - 1)
 
-        # 交易记录格式化 — 从 close_matrix 反查价格, 用 nav 反推金额
+        # 交易记录格式化 — 从 close_matrix 反查价格, 用 nav + 真实权重算金额
         from data_layer.etf_pool import ETF_POOL
         _etf_names = {e["code"]: e["name"] for e in ETF_POOL}
 
@@ -283,6 +283,7 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
             date_str = t.get("date", "")
             action = t.get("action", "")
             is_sell = action in ("stop_loss", "regime_liquidate", "dd_brake_3d", "dd_brake_5d")
+            trade_weights = t.get("weights", {})  # {code: weight} from strategy
 
             # Get codes involved
             if "codes" in t:
@@ -292,12 +293,21 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
             else:
                 codes_list = []
 
-            # Lookup nav at trade date to estimate position size
+            # Portfolio value at trade date
             nav_at_trade = nav_lookup.get(date_str, 1.0)
             portfolio_value = req.initial_capital * nav_at_trade
-            per_etf_amount = portfolio_value / max(len(codes_list), 1)
 
             for code in codes_list:
+                # Use real weight if available, else equal split
+                if trade_weights and code in trade_weights:
+                    weight = trade_weights[code]
+                elif "weight" in t:
+                    weight = t["weight"]  # stop_loss single ETF weight
+                else:
+                    weight = 1.0 / max(len(codes_list), 1)
+
+                etf_amount = portfolio_value * weight
+
                 # Lookup price from close_matrix
                 price = 0.0
                 try:
@@ -307,8 +317,8 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
                 except (KeyError, IndexError):
                     pass
 
-                volume = int(per_etf_amount / price / 100) * 100 if price > 0 else 0
-                amount = volume * price if volume > 0 else per_etf_amount
+                volume = int(etf_amount / price / 100) * 100 if price > 0 else 0
+                amount = volume * price if volume > 0 else round(etf_amount, 2)
 
                 trades.append({
                     "date": date_str,
