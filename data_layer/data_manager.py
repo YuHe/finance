@@ -1,4 +1,5 @@
 """数据层 - 数据获取、存储、涨跌停/成交量标记"""
+from __future__ import annotations
 
 import os
 import sqlite3
@@ -238,6 +239,32 @@ class DataManager:
             df = self.get_daily(code, start_date, end_date)
             if not df.empty:
                 frames.append(df.set_index("date")[["open"]].rename(columns={"open": code}))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, axis=1).sort_index()
+
+    def get_high_matrix(self, start_date: str = None, end_date: str = None, codes: list = None) -> pd.DataFrame:
+        """获取最高价矩阵 (date x code)"""
+        if codes is None:
+            codes = [etf["code"] for etf in ETF_POOL]
+        frames = []
+        for code in codes:
+            df = self.get_daily(code, start_date, end_date)
+            if not df.empty:
+                frames.append(df.set_index("date")[["high"]].rename(columns={"high": code}))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, axis=1).sort_index()
+
+    def get_low_matrix(self, start_date: str = None, end_date: str = None, codes: list = None) -> pd.DataFrame:
+        """获取最低价矩阵 (date x code)"""
+        if codes is None:
+            codes = [etf["code"] for etf in ETF_POOL]
+        frames = []
+        for code in codes:
+            df = self.get_daily(code, start_date, end_date)
+            if not df.empty:
+                frames.append(df.set_index("date")[["low"]].rename(columns={"low": code}))
         if not frames:
             return pd.DataFrame()
         return pd.concat(frames, axis=1).sort_index()

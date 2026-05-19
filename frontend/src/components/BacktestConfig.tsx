@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import client from '../api/client'
-import type { BacktestParams } from '../api/client'
+import type { BacktestParams, StrategyInfo } from '../api/client'
 
 interface BacktestConfigProps {
   onSubmit: (params: BacktestParams) => void
@@ -15,11 +15,12 @@ interface EtfInfo {
 
 function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   const [params, setParams] = useState<BacktestParams>({
+    strategy_type: 'hunter',
     start_date: '2026-01-01',
     end_date: new Date().toISOString().slice(0, 10),
     initial_capital: 1000000,
-    top_n: 1,
-    weight_method: 'equal',
+    top_n: 2,
+    weight_method: 'inverse_volatility',
     rebalance_freq: 'weekly',
     momentum_window: 20,
     stop_loss_enabled: true,
@@ -33,10 +34,14 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set())
   const [selectAll, setSelectAll] = useState(true)
   const [showEtfPanel, setShowEtfPanel] = useState(false)
+  const [strategies, setStrategies] = useState<StrategyInfo[]>([])
 
   useEffect(() => {
     client.get<{ etfs: EtfInfo[] }>('/market/etfs').then(res => {
       setEtfList(res.data.etfs)
+    }).catch(() => {})
+    client.get('/backtest/strategies').then(res => {
+      if (res.data?.data) setStrategies(res.data.data)
     }).catch(() => {})
   }, [])
 
@@ -76,6 +81,40 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       <h2 className="text-lg font-semibold text-white mb-4">回测参数配置</h2>
+
+      {/* Strategy Selector */}
+      <div>
+        <label className="block text-xs text-gray-400 mb-1.5">策略选择</label>
+        <div className="space-y-2">
+          {(strategies.length > 0 ? strategies : [
+            { id: 'classic', name: '经典动量轮动', description: '传统动量+趋势+量价确认', configurable: true },
+            { id: 'hunter', name: '猎手模式', description: '激进追涨, 5天再平衡, 止损后立即重入', configurable: false },
+            { id: 'steady', name: '稳健模式', description: '低频稳健, 7天再平衡, 止损后排除等待', configurable: false },
+          ]).map(s => (
+            <label
+              key={s.id}
+              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                params.strategy_type === s.id
+                  ? 'border-blue-500 bg-blue-500/10'
+                  : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+              }`}
+            >
+              <input
+                type="radio"
+                name="strategy_type"
+                value={s.id}
+                checked={params.strategy_type === s.id}
+                onChange={() => handleChange('strategy_type', s.id)}
+                className="mt-0.5 accent-blue-500"
+              />
+              <div className="flex-1 min-w-0">
+                <span className="text-sm font-medium text-white">{s.name}</span>
+                <p className="text-xs text-gray-400 mt-0.5">{s.description}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
 
       {/* Capital */}
       <div>
@@ -243,6 +282,7 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
       </div>
 
       {/* Weight Method */}
+      {params.strategy_type === 'classic' && (
       <div>
         <label className="block text-xs text-gray-400 mb-1">权重分配方式</label>
         <select
@@ -255,8 +295,10 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
           <option value="inverse_volatility">波动率倒数</option>
         </select>
       </div>
+      )}
 
       {/* Rebalance Frequency */}
+      {params.strategy_type === 'classic' && (
       <div>
         <label className="block text-xs text-gray-400 mb-1">调仓频率</label>
         <select
@@ -269,8 +311,10 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
           <option value="monthly">每月</option>
         </select>
       </div>
+      )}
 
       {/* Momentum Window */}
+      {params.strategy_type === 'classic' && (
       <div>
         <label className="block text-xs text-gray-400 mb-1">
           动量窗口 (交易日): <span className="text-blue-400 font-medium">{params.momentum_window}</span>
@@ -291,8 +335,10 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
           <span>60</span>
         </div>
       </div>
+      )}
 
       {/* Stop Loss */}
+      {params.strategy_type === 'classic' && (
       <div className="space-y-3 p-3 bg-gray-800 rounded-lg border border-gray-700">
         <div className="flex items-center justify-between">
           <label className="text-xs text-gray-400">启用止损</label>
@@ -346,6 +392,7 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
           </div>
         )}
       </div>
+      )}
 
       {/* Submit */}
       <button

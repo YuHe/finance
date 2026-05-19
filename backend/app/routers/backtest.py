@@ -11,6 +11,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backtest import BacktestConfig, BacktestEngine
+from strategy_layer import get_strategy, STRATEGY_REGISTRY
+from data_layer import DataManager
 
 router = APIRouter()
 
@@ -36,6 +38,8 @@ def _cleanup_results():
 
 
 class BacktestRequest(BaseModel):
+    # 策略类型: "classic" (原动量轮动) / "hunter" (猎手模式) / "steady" (稳健模式)
+    strategy_type: str = "classic"
     start_date: str = "2020-01-01"
     end_date: str = "2024-12-31"
     initial_capital: float = 1_000_000
@@ -64,6 +68,12 @@ def _weight_method_map(wm: str) -> str:
 
 def _run_backtest(task_id: str, req: BacktestRequest):
     try:
+        # === 新策略 (hunter / steady) ===
+        if req.strategy_type in STRATEGY_REGISTRY:
+            _run_strategy_backtest(task_id, req)
+            return
+
+        # === 经典策略 (classic) ===
         config = BacktestConfig(
             start_date=req.start_date,
             end_date=req.end_date,
@@ -168,6 +178,122 @@ def _run_backtest(task_id: str, req: BacktestRequest):
         }
 
 
+def _run_strategy_backtest(task_id: str, req: BacktestRequest):
+    """运行新策略 (hunter / steady)"""
+    try:
+        import pandas as pd
+
+        dm = DataManager()
+        codes = req.selected_codes if req.selected_codes else None
+        close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
+
+        if close_matrix.empty:
+            _results[task_id] = {
+                "status": "failed", "_ts": time.time(),
+                "error": {"code": "NO_DATA", "message": "数据库中没有ETF数据，请先点击侧边栏更新行情数据"},
+            }
+            return
+
+        # 获取 high/low/volume 矩阵
+        high_matrix = dm.get_high_matrix(req.start_date, req.end_date, codes=codes)
+        low_matrix = dm.get_low_matrix(req.start_date, req.end_date, codes=codes)
+        volume_matrix = dm.get_amount_matrix(req.start_date, req.end_date, codes=codes)
+
+        # 基准
+        from data_layer import BENCHMARK_CODE
+        bm_df = dm.get_daily(BENCHMARK_CODE, req.start_date, req.end_date)
+        if not bm_df.empty:
+            benchmark = bm_df.set_index("date")["close"]
+        else:
+            benchmark = pd.Series(dtype=float)
+
+        # 对齐矩阵
+        high_matrix = high_matrix.reindex(close_matrix.index).ffill()
+        low_matrix = low_matrix.reindex(close_matrix.index).ffill()
+        volume_matrix = volume_matrix.reindex(close_matrix.index).fillna(0)
+        # 用close填充缺失的high/low
+        high_matrix = high_matrix.fillna(close_matrix)
+        low_matrix = low_matrix.fillna(close_matrix)
+        close_matrix = close_matrix.ffill()
+
+        # 实例化策略
+        strategy = get_strategy(req.strategy_type, top_n=req.top_n)
+        result = strategy.run(
+            close_matrix, high_matrix, low_matrix, volume_matrix, benchmark,
+            start_date=req.start_date, end_date=req.end_date,
+        )
+
+        if result.nav_series is None or len(result.nav_series) == 0:
+            _results[task_id] = {
+                "status": "failed", "_ts": time.time(),
+                "error": {"code": "NO_DATA", "message": "回测区间内数据不足，请尝试缩短时间范围"},
+            }
+            return
+
+        # 构造输出
+        nav_history = [
+            {"date": str(idx), "value": float(v)}
+            for idx, v in result.nav_series.items()
+        ]
+
+        # 基准对齐
+        bm_return = 0.0
+        benchmark_history = []
+        if len(benchmark) > 0:
+            bm_aligned = benchmark.reindex(result.nav_series.index).ffill().dropna()
+            if len(bm_aligned) > 1:
+                bm_nav = bm_aligned / bm_aligned.iloc[0]
+                benchmark_history = [
+                    {"date": str(idx), "value": float(v)}
+                    for idx, v in bm_nav.items()
+                ]
+                bm_return = float(bm_nav.iloc[-1] - 1)
+
+        # 交易记录格式化
+        trades = [
+            {
+                "date": t.get("date", ""),
+                "etf_code": t.get("code", t.get("codes", [""])[0] if "codes" in t else ""),
+                "etf_name": "",
+                "direction": "sell" if t.get("action") in ("stop_loss", "regime_liquidate", "dd_brake_3d", "dd_brake_5d") else "buy",
+                "price": 0,
+                "volume": 0,
+                "amount": 0,
+                "reason": t.get("action", ""),
+            }
+            for t in result.trades[:500]
+        ]
+
+        _results[task_id] = {
+            "status": "completed", "_ts": time.time(),
+            "id": task_id,
+            "metrics": {
+                "total_return": result.total_return,
+                "annual_return": result.annual_return,
+                "max_drawdown": result.max_drawdown,
+                "sharpe_ratio": result.sharpe_ratio,
+                "calmar_ratio": result.calmar_ratio,
+                "win_rate": result.win_rate,
+                "total_trades": result.total_trades,
+                "profit_factor": 0,
+                "volatility": result.annual_volatility,
+                "benchmark_return": bm_return,
+                "alpha": result.annual_return - bm_return,
+                "beta": 1.0,
+            },
+            "nav_history": nav_history,
+            "benchmark_history": benchmark_history,
+            "trades": trades,
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _results[task_id] = {
+            "status": "failed", "_ts": time.time(),
+            "error": {"code": "ENGINE_ERROR", "message": str(e)},
+        }
+
+
 @router.post("/run")
 def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
     _cleanup_results()
@@ -175,6 +301,32 @@ def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
     _results[task_id] = {"status": "running", "_ts": time.time()}
     background_tasks.add_task(_run_backtest, task_id, req)
     return {"success": True, "data": {"id": task_id}, "error": None}
+
+
+@router.get("/strategies")
+def list_strategies():
+    """返回所有可用策略"""
+    strategies = [
+        {
+            "id": "classic",
+            "name": "经典动量轮动",
+            "description": "基于动量+趋势+量价确认的传统轮动策略，可自定义参数",
+            "configurable": True,
+        },
+        {
+            "id": "hunter",
+            "name": "猎手模式",
+            "description": "激进追涨型：Composite信号 + 5天再平衡 + 止损后立即重入 + ATR跟踪止损",
+            "configurable": False,
+        },
+        {
+            "id": "steady",
+            "name": "稳健模式",
+            "description": "低频稳健型：Composite信号 + 7天再平衡 + 止损后排除等待下周期 + ATR跟踪止损",
+            "configurable": False,
+        },
+    ]
+    return {"success": True, "data": strategies, "error": None}
 
 
 @router.get("/result/{task_id}")

@@ -8,6 +8,7 @@ import PortfolioPage from './pages/PortfolioPage'
 import DataPage from './pages/DataPage'
 import AdminPage from './pages/AdminPage'
 import LLMSettingsPage from './pages/LLMSettingsPage'
+import StrategyPage from './pages/StrategyPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token } = useAuth()
@@ -35,6 +36,7 @@ function AppRoutes() {
       >
         <Route index element={<Navigate to="/backtest" replace />} />
         <Route path="backtest" element={<BacktestPage />} />
+        <Route path="strategy" element={<StrategyPage />} />
         <Route path="data" element={<DataPage />} />
         <Route path="signal" element={<SignalPage />} />
         <Route path="portfolio" element={<PortfolioPage />} />

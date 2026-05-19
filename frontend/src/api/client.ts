@@ -54,6 +54,7 @@ export interface ApiResponse<T> {
 
 // Backtest types
 export interface BacktestParams {
+  strategy_type: 'classic' | 'hunter' | 'steady'
   start_date: string
   end_date: string
   initial_capital: number
@@ -66,6 +67,13 @@ export interface BacktestParams {
   trailing_stop: boolean
   trailing_stop_threshold: number
   selected_codes: string[] | null
+}
+
+export interface StrategyInfo {
+  id: string
+  name: string
+  description: string
+  configurable: boolean
 }
 
 export interface BacktestResult {
