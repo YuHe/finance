@@ -96,7 +96,7 @@ class DataManager:
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag="2",   # 后复权
+                adjustflag="1",   # 后复权
             )
             # 获取不复权涨跌幅（用于涨跌停判断，避免复权调整干扰）
             rs_raw = bs.query_history_k_data_plus(
