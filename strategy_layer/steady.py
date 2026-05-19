@@ -236,20 +236,21 @@ class SteadyStrategy(BaseStrategy):
                     continue
 
             # 再平衡: 仅在定期周期到达时（Steady特有: 止损后不立即重入）
+            # 信号基于 i-1 (昨日收盘) 计算，入场用 i (今日收盘) 执行 → 消除同Bar偏差
             need_rebal = (i - last_rebal >= self.rebal_period)
             if need_rebal and not is_severe:
                 # 新周期开始时清除排除列表
                 excluded_codes.clear()
 
-                scores_today = compute_composite_scores(close_matrix, i)
+                scores_today = compute_composite_scores(close_matrix, i - 1)
                 if scores_today.empty:
                     equity_series.append((date, equity))
                     last_rebal = i
                     continue
 
-                # 趋势过滤
-                uptrend_mask = (close_matrix.iloc[i] > ma20.iloc[i]) & (ma5.iloc[i] > ma10.iloc[i])
-                pos_mom = mom5.iloc[i] > 0
+                # 趋势过滤（基于昨日数据）
+                uptrend_mask = (close_matrix.iloc[i - 1] > ma20.iloc[i - 1]) & (ma5.iloc[i - 1] > ma10.iloc[i - 1])
+                pos_mom = mom5.iloc[i - 1] > 0
                 valid_mask = uptrend_mask & pos_mom
                 for code in scores_today.index:
                     if code not in valid_mask.index or not valid_mask.get(code, False):
@@ -262,10 +263,10 @@ class SteadyStrategy(BaseStrategy):
                     errors='ignore'
                 )
 
-                # VR 软权重
+                # VR 软权重（基于昨日及之前数据）
                 if self.use_vr_weight and len(scores_today) > 0:
                     for code in scores_today.index:
-                        ret_sub = returns_matrix[code].iloc[max(0, i - 25):i + 1].dropna()
+                        ret_sub = returns_matrix[code].iloc[max(0, i - 26):i].dropna()
                         vr = compute_variance_ratio(ret_sub, q=5)
                         vr_multiplier = np.clip(vr, 0.3, 2.0)
                         scores_today[code] *= vr_multiplier
@@ -274,8 +275,8 @@ class SteadyStrategy(BaseStrategy):
                     actual_n = min(self.top_n, len(scores_today))
                     top = scores_today.nlargest(actual_n)
 
-                    # 反波动率加权
-                    vols = vol10.iloc[i][top.index].replace(0, np.nan).dropna()
+                    # 反波动率加权（基于昨日波动率）
+                    vols = vol10.iloc[i - 1][top.index].replace(0, np.nan).dropna()
                     if len(vols) > 0:
                         inv_vol = 1.0 / vols.clip(lower=0.005)
                         weights = inv_vol / inv_vol.sum()
