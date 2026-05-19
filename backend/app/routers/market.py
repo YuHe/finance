@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter, BackgroundTasks
 from typing import Optional
-import multiprocessing
 import threading
 import sys
 import os
@@ -12,12 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from data_layer import DataManager, ETF_POOL, BENCHMARK_CODE
 from data_layer.etf_pool import BENCHMARK_NAME
 from regime_layer import RegimeEngine
-
-# 确保子进程使用 fork（Linux 默认，但显式设置更安全）
-try:
-    multiprocessing.set_start_method("fork", force=False)
-except RuntimeError:
-    pass  # 已设置过
 
 router = APIRouter()
 
@@ -110,36 +103,17 @@ def get_update_status():
     return _update_state
 
 
-def _update_single_etf(code: str, db_path: str, start_date: str = "2015-01-01", end_date: str = None):
+def _update_single_etf(code: str, db_path: str):
     """
-    单个ETF更新（独立进程内执行）
-    BaoStock 使用全局 socket，不支持多线程，必须用多进程隔离。
-    fork 模式下子进程继承 sys.path 和已导入的模块。
+    单个ETF更新（需要已登录BaoStock）
     """
-    import baostock as bs
-
-    lg = bs.login()
-    if lg.error_code != "0":
-        raise RuntimeError(f"BaoStock 登录失败: {lg.error_msg}")
-    try:
-        dm = DataManager(db_path=db_path)
-        dm.update_etf(code, start_date, end_date, _logged_in=True)
-    finally:
-        bs.logout()
-
-
-def _process_worker(args):
-    """进程池 worker（必须是顶层可 pickle 的函数）"""
-    code, db_path = args
-    try:
-        _update_single_etf(code, db_path)
-        return code, "ok", ""
-    except Exception as e:
-        return code, "error", str(e)
+    dm = DataManager(db_path=db_path)
+    dm.update_etf(code, _logged_in=True)
 
 
 def _do_update():
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    """串行更新所有ETF（避免多进程并发写SQLite导致数据丢失）"""
+    import baostock as bs
 
     codes = [etf["code"] for etf in ETF_POOL] + [BENCHMARK_CODE]
     total = len(codes)
@@ -149,29 +123,30 @@ def _do_update():
     for code in codes:
         name = next((e["name"] for e in ETF_POOL if e["code"] == code), BENCHMARK_NAME if code == BENCHMARK_CODE else code)
         items.append({"code": code, "name": name, "status": "pending", "error": ""})
-    _update_state.update({"status": "running", "progress": 0, "total": total, "message": "开始并行更新...", "items": items})
+    _update_state.update({"status": "running", "progress": 0, "total": total, "message": "开始更新...", "items": items})
 
-    # 获取 DB 路径传给子进程
     dm = DataManager()
     db_path = dm.db_path
 
-    # 多进程并行（BaoStock 全局 socket 不支持多线程，必须用进程隔离）
-    max_workers = min(4, total)
-    code_to_idx = {item["code"]: i for i, item in enumerate(items)}
+    # 单次登录，串行更新（BaoStock 全局 socket + SQLite 单写者，串行最可靠）
+    lg = bs.login()
+    if lg.error_code != "0":
+        _update_state.update({"status": "error", "message": f"BaoStock 登录失败: {lg.error_msg}"})
+        return
 
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        work_args = [(code, db_path) for code in codes]
-        futures = {pool.submit(_process_worker, args): args[0] for args in work_args}
-
-        completed_count = 0
-        for future in as_completed(futures):
-            code, status, error = future.result()
-            idx = code_to_idx[code]
-            items[idx]["status"] = status
-            items[idx]["error"] = error
-            completed_count += 1
-            _update_state["progress"] = completed_count
-            _update_state["message"] = f"更新中... ({completed_count}/{total})"
+    try:
+        for i, code in enumerate(codes):
+            items[i]["status"] = "running"
+            _update_state["message"] = f"更新 {items[i]['name']}... ({i + 1}/{total})"
+            try:
+                _update_single_etf(code, db_path)
+                items[i]["status"] = "ok"
+            except Exception as e:
+                items[i]["status"] = "error"
+                items[i]["error"] = str(e)
+            _update_state["progress"] = i + 1
+    finally:
+        bs.logout()
 
     errors = [it for it in items if it["status"] == "error"]
     if errors:

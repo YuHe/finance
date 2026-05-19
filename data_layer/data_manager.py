@@ -183,8 +183,12 @@ class DataManager:
 
     def clear_all_data(self):
         """清空所有ETF日频数据（用于重拉修复数据断裂）"""
-        self.conn.execute("DELETE FROM etf_daily")
-        self.conn.commit()
+        # 使用独立连接确保清空操作完全落盘
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DELETE FROM etf_daily")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+        conn.close()
 
     # ─── 数据查询 ───────────────────────────────────────────
 
