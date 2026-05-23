@@ -217,12 +217,13 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
         codes = req.selected_codes if req.selected_codes else None
         close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
 
-        # Fallback: 如果主库数据不足，尝试 backtest_adjusted.db
-        data_dir = Path(__file__).parent.parent.parent.parent / "data_layer"
+        # Fallback: 如果主库数据不足（策略需要80天warmup+足够回测期），尝试 backtest_adjusted.db
+        data_dir = Path(__file__).resolve().parent.parent.parent / "data_layer"
         bt_db = data_dir / "backtest_adjusted.db"
-        if (close_matrix.empty or len(close_matrix) < 60) and bt_db.exists():
+        if (close_matrix.empty or len(close_matrix) < 200) and bt_db.exists():
             dm = DataManager(db_path=str(bt_db))
             close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
+            print(f"[strategy] fallback to backtest_adjusted.db, shape={close_matrix.shape}")
 
         if close_matrix.empty:
             _results[task_id] = {
