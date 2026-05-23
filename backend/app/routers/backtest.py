@@ -57,12 +57,11 @@ def _cleanup_results():
 
 
 class BacktestRequest(BaseModel):
-    # 策略类型: "classic" (原动量轮动) / "hunter" (猎手模式) / "steady" (稳健模式)
-    strategy_type: str = "classic"
+    strategy_type: str = "adaptive_premium"
     start_date: str = "2020-01-01"
     end_date: str = "2024-12-31"
     initial_capital: float = 1_000_000
-    top_n: int = 3
+    top_n: int = 2
     # 前端枚举: equal / momentum_weighted / inverse_volatility
     weight_method: str = "equal"
     rebalance_freq: str = "weekly"
@@ -74,6 +73,14 @@ class BacktestRequest(BaseModel):
     trailing_stop_threshold: float = 0.05
     # 可选：选择参与回测的 ETF 代码列表（空则全池）
     selected_codes: Optional[list[str]] = Field(default=None)
+    # 新策略参数
+    hold_days: int = 7
+    fee: float = 0.001
+    w_sharpe: float = 0.4
+    w_rs: float = 0.3
+    w_premium: float = 0.3
+    w_momq: float = 0.15
+    w_sharpe5: float = 0.20
 
 
 def _weight_method_map(wm: str) -> str:
@@ -239,7 +246,13 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
         close_matrix = close_matrix.ffill()
 
         # 实例化策略
-        strategy = get_strategy(req.strategy_type, top_n=req.top_n)
+        strategy_kwargs = {"top_n": req.top_n, "hold_days": req.hold_days, "fee": req.fee}
+        if req.strategy_type == "adaptive_premium":
+            strategy_kwargs.update(w_sharpe=req.w_sharpe, w_rs=req.w_rs, w_premium=req.w_premium)
+        elif req.strategy_type == "momentum_quality":
+            strategy_kwargs.update(w_sharpe=req.w_sharpe, w_rs=req.w_rs,
+                                   w_premium=req.w_premium, w_momq=req.w_momq, w_sharpe5=req.w_sharpe5)
+        strategy = get_strategy(req.strategy_type, **strategy_kwargs)
         result = strategy.run(
             close_matrix, high_matrix, low_matrix, volume_matrix, benchmark,
             start_date=req.start_date, end_date=req.end_date,
@@ -378,22 +391,22 @@ def list_strategies():
     """返回所有可用策略"""
     strategies = [
         {
+            "id": "adaptive_premium",
+            "name": "自适应折溢价",
+            "description": "信用脉冲择时 + Sharpe/RS/折溢价三信号选股，适合大ETF池(71只)，年化32.8%/Sharpe 1.67",
+            "configurable": True,
+        },
+        {
+            "id": "momentum_quality",
+            "name": "动量质量",
+            "description": "5信号选股(Sharpe/RS/折溢价/动量质量/短期Sharpe) + 信用脉冲择时，年化32.1%/Sharpe 1.83",
+            "configurable": True,
+        },
+        {
             "id": "classic",
             "name": "经典动量轮动",
             "description": "基于动量+趋势+量价确认的传统轮动策略，可自定义参数",
             "configurable": True,
-        },
-        {
-            "id": "hunter",
-            "name": "猎手模式",
-            "description": "激进追涨型：Composite信号 + 5天再平衡 + 止损后立即重入 + ATR跟踪止损",
-            "configurable": False,
-        },
-        {
-            "id": "steady",
-            "name": "稳健模式",
-            "description": "低频稳健型：Composite信号 + 7天再平衡 + 止损后排除等待下周期 + ATR跟踪止损",
-            "configurable": False,
         },
     ]
     return {"success": True, "data": strategies, "error": None}

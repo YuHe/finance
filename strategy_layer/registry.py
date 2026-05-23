@@ -1,13 +1,13 @@
 """策略注册表"""
 
 from typing import Dict, Type
-from .hunter import HunterStrategy
-from .steady import SteadyStrategy
+from .adaptive_premium import AdaptivePremiumStrategy
+from .momentum_quality import MomentumQualityStrategy
 from .base import BaseStrategy
 
 STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
-    "hunter": HunterStrategy,
-    "steady": SteadyStrategy,
+    "adaptive_premium": AdaptivePremiumStrategy,
+    "momentum_quality": MomentumQualityStrategy,
 }
 
 

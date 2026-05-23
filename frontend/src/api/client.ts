@@ -54,7 +54,7 @@ export interface ApiResponse<T> {
 
 // Backtest types
 export interface BacktestParams {
-  strategy_type: 'classic' | 'hunter' | 'steady'
+  strategy_type: 'adaptive_premium' | 'momentum_quality' | 'classic'
   start_date: string
   end_date: string
   initial_capital: number
@@ -67,6 +67,13 @@ export interface BacktestParams {
   trailing_stop: boolean
   trailing_stop_threshold: number
   selected_codes: string[] | null
+  hold_days: number
+  fee: number
+  w_sharpe: number
+  w_rs: number
+  w_premium: number
+  w_momq: number
+  w_sharpe5: number
 }
 
 export interface StrategyInfo {

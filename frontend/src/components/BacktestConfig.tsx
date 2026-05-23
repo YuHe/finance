@@ -15,12 +15,12 @@ interface EtfInfo {
 
 function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   const [params, setParams] = useState<BacktestParams>({
-    strategy_type: 'hunter',
-    start_date: '2026-01-01',
+    strategy_type: 'adaptive_premium',
+    start_date: '2021-01-01',
     end_date: new Date().toISOString().slice(0, 10),
     initial_capital: 1000000,
     top_n: 2,
-    weight_method: 'inverse_volatility',
+    weight_method: 'equal',
     rebalance_freq: 'weekly',
     momentum_window: 20,
     stop_loss_enabled: true,
@@ -28,6 +28,13 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
     trailing_stop: false,
     trailing_stop_threshold: 0.05,
     selected_codes: null,
+    hold_days: 7,
+    fee: 0.001,
+    w_sharpe: 0.4,
+    w_rs: 0.3,
+    w_premium: 0.3,
+    w_momq: 0.15,
+    w_sharpe5: 0.20,
   })
 
   const [etfList, setEtfList] = useState<EtfInfo[]>([])
@@ -46,7 +53,20 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
   }, [])
 
   const handleChange = (field: keyof BacktestParams, value: string | number | boolean) => {
-    setParams((prev) => ({ ...prev, [field]: value }))
+    setParams((prev) => {
+      const next = { ...prev, [field]: value }
+      // Reset weights to defaults when switching strategy
+      if (field === 'strategy_type') {
+        if (value === 'adaptive_premium') {
+          next.w_sharpe = 0.4; next.w_rs = 0.3; next.w_premium = 0.3
+          next.w_momq = 0.15; next.w_sharpe5 = 0.20
+        } else if (value === 'momentum_quality') {
+          next.w_sharpe = 0.30; next.w_rs = 0.15; next.w_premium = 0.20
+          next.w_momq = 0.15; next.w_sharpe5 = 0.20
+        }
+      }
+      return next
+    })
   }
 
   const toggleEtf = (code: string) => {
@@ -87,9 +107,9 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
         <label className="block text-xs text-gray-400 mb-1.5">策略选择</label>
         <div className="space-y-2">
           {(strategies.length > 0 ? strategies : [
+            { id: 'adaptive_premium', name: '自适应折溢价', description: '信用脉冲择时 + Sharpe/RS/折溢价, 年化32.8%/Sharpe 1.67', configurable: true },
+            { id: 'momentum_quality', name: '动量质量', description: '5信号选股 + 信用脉冲择时, 年化32.1%/Sharpe 1.83', configurable: true },
             { id: 'classic', name: '经典动量轮动', description: '传统动量+趋势+量价确认', configurable: true },
-            { id: 'hunter', name: '猎手模式', description: '激进追涨, 5天再平衡, 止损后立即重入', configurable: false },
-            { id: 'steady', name: '稳健模式', description: '低频稳健, 7天再平衡, 止损后排除等待', configurable: false },
           ]).map(s => (
             <label
               key={s.id}
@@ -280,6 +300,68 @@ function BacktestConfig({ onSubmit, loading }: BacktestConfigProps) {
           <span>5</span>
         </div>
       </div>
+
+      {/* Strategy-specific params for new strategies */}
+      {(params.strategy_type === 'adaptive_premium' || params.strategy_type === 'momentum_quality') && (
+      <div className="space-y-3 p-3 bg-gray-800 rounded-lg border border-gray-700">
+        <label className="block text-xs text-gray-400 font-medium">策略参数</label>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">
+            持仓天数: <span className="text-blue-400 font-medium">{params.hold_days}天</span>
+          </label>
+          <input
+            type="range"
+            min={3}
+            max={14}
+            value={params.hold_days}
+            onChange={(e) => handleChange('hold_days', parseInt(e.target.value))}
+            className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>3</span><span>7</span><span>14</span>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <label className="block text-xs text-gray-400">信号权重</label>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-500">Sharpe_20d: {(params.w_sharpe * 100).toFixed(0)}%</label>
+              <input type="range" min={0} max={0.6} step={0.05} value={params.w_sharpe}
+                onChange={(e) => handleChange('w_sharpe', parseFloat(e.target.value))}
+                className="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-blue-500" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">RS_10d: {(params.w_rs * 100).toFixed(0)}%</label>
+              <input type="range" min={0} max={0.5} step={0.05} value={params.w_rs}
+                onChange={(e) => handleChange('w_rs', parseFloat(e.target.value))}
+                className="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-blue-500" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">折溢价: {(params.w_premium * 100).toFixed(0)}%</label>
+              <input type="range" min={0} max={0.5} step={0.05} value={params.w_premium}
+                onChange={(e) => handleChange('w_premium', parseFloat(e.target.value))}
+                className="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-blue-500" />
+            </div>
+            {params.strategy_type === 'momentum_quality' && (
+            <>
+              <div>
+                <label className="text-xs text-gray-500">动量质量: {(params.w_momq * 100).toFixed(0)}%</label>
+                <input type="range" min={0} max={0.4} step={0.05} value={params.w_momq}
+                  onChange={(e) => handleChange('w_momq', parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">Sharpe_5d: {(params.w_sharpe5 * 100).toFixed(0)}%</label>
+                <input type="range" min={0} max={0.4} step={0.05} value={params.w_sharpe5}
+                  onChange={(e) => handleChange('w_sharpe5', parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-blue-500" />
+              </div>
+            </>
+            )}
+          </div>
+        </div>
+      </div>
+      )}
 
       {/* Weight Method */}
       {params.strategy_type === 'classic' && (
