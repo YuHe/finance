@@ -217,25 +217,28 @@ def _run_strategy_backtest(task_id: str, req: BacktestRequest):
         codes = req.selected_codes if req.selected_codes else None
         close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
 
-        # Fallback: 如果主库数据不足（策略需要80天warmup+足够回测期），尝试 backtest_adjusted.db
+        # Fallback: 合并 backtest_adjusted.db (历史) + etf_data.db (近期)
         data_dir = Path(__file__).resolve().parent.parent.parent / "data_layer"
         bt_db = data_dir / "backtest_adjusted.db"
-        if (close_matrix.empty or len(close_matrix) < 200) and bt_db.exists():
-            dm = DataManager(db_path=str(bt_db))
-            close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
-            print(f"[strategy] fallback to backtest_adjusted.db, shape={close_matrix.shape}")
+        if bt_db.exists():
+            dm_bt = DataManager(db_path=str(bt_db))
+            close_bt = dm_bt.get_close_matrix(req.start_date, req.end_date, codes=codes)
+            if not close_bt.empty:
+                close_matrix = pd.concat([close_bt, close_matrix]).loc[~pd.concat([close_bt, close_matrix]).index.duplicated(keep='last')].sort_index()
+                dm = dm_bt  # use bt db for high/low/volume too
+            print(f"[strategy] merged data shape={close_matrix.shape}")
 
-        if close_matrix.empty:
+        if close_matrix.empty or len(close_matrix) < 100:
             _results[task_id] = {
                 "status": "failed", "_ts": time.time(),
-                "error": {"code": "NO_DATA", "message": "数据库中没有ETF数据，请先点击侧边栏更新行情数据"},
+                "error": {"code": "NO_DATA", "message": "回测区间内数据不足（需至少100个交易日），请选择更早的起始日期"},
             }
             return
 
-        # 获取 high/low/volume 矩阵
+        # 获取 high/low/volume 矩阵 (用volume代替amount，backtest_adjusted.db无amount列)
         high_matrix = dm.get_high_matrix(req.start_date, req.end_date, codes=codes)
         low_matrix = dm.get_low_matrix(req.start_date, req.end_date, codes=codes)
-        volume_matrix = dm.get_amount_matrix(req.start_date, req.end_date, codes=codes)
+        volume_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)  # placeholder, strategy doesn't use volume
 
         # 基准
         from data_layer import BENCHMARK_CODE
