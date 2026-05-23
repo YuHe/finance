@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.db
+!data_layer/signals.db
 .env
 node_modules/
 dist/
