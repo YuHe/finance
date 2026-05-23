@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.db
 !data_layer/signals.db
+!data_layer/backtest_adjusted.db
 .env
 node_modules/
 dist/

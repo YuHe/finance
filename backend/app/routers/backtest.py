@@ -208,13 +208,21 @@ def _run_backtest(task_id: str, req: BacktestRequest):
 
 
 def _run_strategy_backtest(task_id: str, req: BacktestRequest):
-    """运行新策略 (hunter / steady)"""
+    """运行新策略 (adaptive_premium / momentum_quality)"""
     try:
         import pandas as pd
+        from pathlib import Path
 
         dm = DataManager()
         codes = req.selected_codes if req.selected_codes else None
         close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
+
+        # Fallback: 如果主库数据不足，尝试 backtest_adjusted.db
+        data_dir = Path(__file__).parent.parent.parent.parent / "data_layer"
+        bt_db = data_dir / "backtest_adjusted.db"
+        if (close_matrix.empty or len(close_matrix) < 60) and bt_db.exists():
+            dm = DataManager(db_path=str(bt_db))
+            close_matrix = dm.get_close_matrix(req.start_date, req.end_date, codes=codes)
 
         if close_matrix.empty:
             _results[task_id] = {
